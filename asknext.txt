@@ -1,0 +1,7 @@
+
+Things to implement #2
+-----------------
+Add a new boss level, level 12: Alien Mothership boss - "Destroy the mothership!", deploys drone waves and shield nodes; make sure all prev levels hazards and enemies and asteroids get removed on transition to level 12. on this level no asteroids spawn . 3 Mines appear infront of the bosses shield nodes at the start of the level only. The boss mothership spawns on the right hand side of the screen and only moves up and down slowely. The mothership has 5 red shield nodes spread out infront of it that each  take 3 hits to destroy and a core that takes 5 hits to destroy. It deploys waves of drones that aim for the player ship and explode on contact pushing it but not damaging it. every 3 seconds one of the shield nodes charges up for 2 seconds to fire a red laser at the player ships location but make it aim at the location that the player ship was at when the sheild node started charging the attack so it gives the player chance to move out of the way.  
+
+level 1 - 7 tested ok
+test level 8 boss next
