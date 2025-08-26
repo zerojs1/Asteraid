@@ -19,7 +19,8 @@ export class Asteroid {
     // Set radius based on size
     const radiuses = [20, 40, 60, 80];
     this.radius = radiuses[size - 1];
-    if (this.elite) this.radius = Math.floor(this.radius * 1.2);
+    // Elites were previously 1.2x base. Reduce by 40% of that current size => 1.2 * 0.6 = 0.72x base
+    if (this.elite) this.radius = Math.floor(this.radius * 0.72);
 
     // Set speed based on size
     const speeds = [1.5, 1.0, 0.5, 0.9];
@@ -46,10 +47,17 @@ export class Asteroid {
     if (this.elite) {
       this.trail = [];
       this.trailTick = 0;
+      // Track time alive to periodically spawn drones (every 8s)
+      this.droneSpawnFrames = 0;
+    }
+    // Small (size 1) normal/armored asteroids: subtle short motion trail
+    if (this.size === 1 && !this.elite) {
+      this.trailSmall = [];
+      this.trailSmallTick = 0;
     }
   }
 
-  update(level, gravityWells, canvas, applyGravityTo) {
+  update(level, gravityWells, canvas, applyGravityTo, spawnDrone) {
     // Gravity influence (Level 5)
     if (level >= 5 && gravityWells.length > 0) {
       applyGravityTo(this, 1);
@@ -79,6 +87,30 @@ export class Asteroid {
           if (this.trail[i].alpha <= 0.02) this.trail.splice(i, 1);
         }
       }
+      // Periodic drone spawns for elites: one every 8 seconds they are alive
+      if (typeof spawnDrone === 'function') {
+        this.droneSpawnFrames = (this.droneSpawnFrames || 0) + 1;
+        if (this.droneSpawnFrames >= 480) { // ~8s at 60fps
+          spawnDrone(this.x, this.y);
+          this.droneSpawnFrames = 0;
+        }
+      }
+    }
+    // Small asteroid subtle trail (always-on when moving fast enough)
+    if (this.size === 1 && !this.elite) {
+      this.trailSmallTick = (this.trailSmallTick || 0) + 1;
+      const speedNow = Math.hypot(this.vx, this.vy);
+      if (this.trailSmallTick % 2 === 0 && speedNow > 0.7) {
+        if (!this.trailSmall) this.trailSmall = [];
+        this.trailSmall.push({ x: this.x, y: this.y, rot: this.rotation, alpha: 0.44 });
+        if (this.trailSmall.length > 24) this.trailSmall.shift();
+      }
+      if (this.trailSmall && this.trailSmall.length) {
+        for (let i = this.trailSmall.length - 1; i >= 0; i--) {
+          this.trailSmall[i].alpha -= 0.03;
+          if (this.trailSmall[i].alpha <= 0.02) this.trailSmall.splice(i, 1);
+        }
+      }
     }
   }
 
@@ -95,7 +127,35 @@ export class Asteroid {
         ctx.shadowBlur = 10;
         ctx.shadowColor = '#0f0';
         ctx.strokeStyle = '#0f0';
-        ctx.lineWidth = 1;
+        // Thicker trail outline for elites
+        ctx.lineWidth = 2;
+        ctx.translate(t.x, t.y);
+        ctx.rotate(t.rot);
+        ctx.beginPath();
+        for (let j = 0; j < this.vertices.length; j++) {
+          const vertex = this.vertices[j];
+          const x = Math.cos(vertex.angle) * vertex.radius * 0.95;
+          const y = Math.sin(vertex.angle) * vertex.radius * 0.95;
+          if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    // Small asteroid subtle trail (draw behind)
+    if (this.size === 1 && !this.elite && this.trailSmall && this.trailSmall.length) {
+      const tColor = this.armored ? '#f00' : '#f0f';
+      for (let i = 0; i < this.trailSmall.length; i++) {
+        const t = this.trailSmall[i];
+        const alpha = t.alpha;
+        if (alpha <= 0.02) continue;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = tColor;
+        ctx.strokeStyle = tColor;
+        ctx.lineWidth = 2;
         ctx.translate(t.x, t.y);
         ctx.rotate(t.rot);
         ctx.beginPath();
@@ -119,7 +179,8 @@ export class Asteroid {
     // Draw with multiple glow layers
     for (let i = 3; i >= 0; i--) {
       ctx.strokeStyle = color;
-      ctx.lineWidth = i === 0 ? 2 : 1;
+      // Elite asteroids have thicker outlines than normal/armored
+      ctx.lineWidth = i === 0 ? (this.elite ? 3 : 2) : (this.elite ? 2 : 1);
       ctx.globalAlpha = i === 0 ? 1 : 0.3;
       ctx.shadowBlur = 20 - i * 5;
       ctx.shadowColor = color;

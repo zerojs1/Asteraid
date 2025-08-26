@@ -289,7 +289,7 @@ export class AlienCarrierBoss {
     createExplosion(this.x, this.y, this.coreRadius * 3, '#9f9');
     setShake && setShake(24, 8);
     // Award fixed points for defeating the boss core
-    awardPoints(500, this.x, this.y);
+    awardPoints(500, this.x, this.y, true);
     const drops = 2 + Math.floor(Math.random() * 2); // 2-3
     for (let i = 0; i < drops; i++) {
       const ang = Math.random() * Math.PI * 2;

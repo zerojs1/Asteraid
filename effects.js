@@ -56,51 +56,54 @@ export class WarpTunnel {
     this.endY = endY;
     this.duration = duration;
     this.maxDuration = duration;
-    this.lines = [];
-
-    // Create stretched star lines
-    for (let i = 0; i < 20; i++) {
-      this.lines.push({
-        progress: Math.random(),
-        offset: (Math.random() - 0.5) * 100,
-        brightness: 0.5 + Math.random() * 0.5,
-      });
-    }
+    this.phase = 0; // for pulsing brightness
   }
 
   update() {
     this.duration--;
-    // Update line positions
-    this.lines.forEach(line => {
-      line.progress += 0.08;
-      if (line.progress > 1) line.progress = 0;
-    });
+    this.phase += 0.25;
   }
 
   draw(ctx) {
-    const alpha = this.duration / this.maxDuration;
-    ctx.globalAlpha = alpha;
+    const t = Math.max(0, this.duration / this.maxDuration);
+    const alpha = t;
+    ctx.save();
+    const prevOp = ctx.globalCompositeOperation;
+    ctx.globalCompositeOperation = 'lighter'; // additive for stronger glow
 
-    this.lines.forEach(line => {
-      const x = this.startX + (this.endX - this.startX) * line.progress;
-      const y = this.startY + (this.endY - this.startY) * line.progress;
+    // Pulse factor similar to the wormhole connection line
+    const p = 0.5 + 0.5 * Math.sin(this.phase);
 
-      // Perpendicular offset
-      const angle = Math.atan2(this.endY - this.startY, this.endX - this.startX);
-      const perpX = Math.cos(angle + Math.PI / 2) * line.offset;
-      const perpY = Math.sin(angle + Math.PI / 2) * line.offset;
+    // Gradient along the connection line
+    const grad = ctx.createLinearGradient(this.startX, this.startY, this.endX, this.endY);
+    grad.addColorStop(0, 'rgba(100, 220, 255, 0.9)');
+    grad.addColorStop(0.5, 'rgba(240, 120, 255, 0.9)');
+    grad.addColorStop(1, 'rgba(100, 220, 255, 0.9)');
 
-      ctx.strokeStyle = `hsl(${180 + line.offset * 0.5}, 100%, ${50 * line.brightness}%)`;
-      ctx.shadowColor = ctx.strokeStyle;
-      ctx.shadowBlur = 8;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(x + perpX - 10, y + perpY);
-      ctx.lineTo(x + perpX + 10, y + perpY);
-      ctx.stroke();
-    });
+    // Outer glow stroke
+    ctx.globalAlpha = (0.28 + 0.35 * p) * alpha;
+    ctx.strokeStyle = grad;
+    ctx.shadowColor = 'rgba(180, 240, 255, 1)';
+    ctx.shadowBlur = 24 + 14 * p;
+    ctx.lineWidth = 3.0 + 1.6 * p;
+    ctx.beginPath();
+    ctx.moveTo(this.startX, this.startY);
+    ctx.lineTo(this.endX, this.endY);
+    ctx.stroke();
 
+    // Core bright stroke
+    ctx.globalAlpha = (0.65 + 0.25 * p) * alpha;
+    ctx.strokeStyle = '#eaffff';
+    ctx.shadowColor = '#eaffff';
+    ctx.shadowBlur = 12 + 8 * p;
+    ctx.lineWidth = 1.8 + 0.8 * p;
+    ctx.beginPath();
+    ctx.moveTo(this.startX, this.startY);
+    ctx.lineTo(this.endX, this.endY);
+    ctx.stroke();
+
+    ctx.globalCompositeOperation = prevOp;
     ctx.shadowBlur = 0;
-    ctx.globalAlpha = 1;
+    ctx.restore();
   }
 }

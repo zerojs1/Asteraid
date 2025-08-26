@@ -33,6 +33,7 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
+            will-change: transform; /* optimize scaling */
             border: 2px solid #0ff;
             box-shadow: 
                 0 0 20px #0ff,
@@ -99,13 +100,13 @@
         
         #hi {
             top: 20px;
-            left: 320px; /* move HI further right from SCORE */
+            left: 280px; /* move HI further right from SCORE */
             font-size: 18px;
         }
         
         #combo {
             top: 20px;
-            left: calc(50% + 300px); /* same gap from LEVEL as HI is from SCORE (320 - 20 = 300) */
+            left: calc(50% + 260px); /* same gap from LEVEL as HI is from SCORE (320 - 20 = 300) */
             font-size: 18px;
         }
         
@@ -141,6 +142,8 @@
             color: #fff;
             text-shadow: 0 0 8px #0ff, 0 0 16px #0ff, 0 0 24px #f0f, 0 0 48px #f0f;
             animation: neonFlash 0.9s ease-in-out infinite alternate;
+            white-space: nowrap; /* keep on a single line */
+            text-align: center;  /* center text within its own width */
         }
         
         #powerup {
@@ -193,28 +196,119 @@
             bottom: 60px; /* similar to POWER-UP text */
             left: 50%;
             transform: translateX(-50%);
-            max-width: 900px;
+            width: min(90%, 900px); /* prevent shrink-to-fit; fixed width for centering */
             text-align: center;
             margin: 0;
             color: #0f0;
             text-shadow: 0 0 8px #0f0, 0 0 16px #0f0;
             font-size: 16px;
+            min-height: 1.2em; /* keep area reserved for crossfade layers */
+            white-space: nowrap; /* keep tips on one line */
         }
+        /* Crossfade layers for rotating tips */
+        #startScreen #tipText .tip-layer {
+            position: absolute;
+            left: 0; right: 0; top: 0;
+            opacity: 0;
+            transition: opacity 0.6s ease;
+        }
+        #startScreen #tipText .tip-visible { opacity: 1; }
         
         .menu-screen h1 {
             font-size: 64px;
             color: #ffccff;
-            text-shadow: 
-                0 0 20px #f0f,
-                0 0 40px #f0f,
-                0 0 60px #f0f;
+            text-shadow:
+                0 0 28px #f0f,
+                0 0 64px #f0f,
+                0 0 120px #f0f,
+                0 0 180px rgba(0,255,255,0.8);
             margin-bottom: 50px;
-            animation: pulseglow 2s ease-in-out infinite;
+            animation: titlePulse 2.4s ease-in-out infinite;
+            position: relative; /* allow lens flare overlay */
+            z-index: 0; /* create stacking context; text sits at base */
+        }
+        /* Dark nebula under the start title for readability over animated background */
+        #startScreen h1::before {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: min(80vw, 900px);
+            height: min(36vh, 320px);
+            background: radial-gradient(ellipse at center,
+                rgba(0,0,0,0.60) 0%,
+                rgba(0,0,0,0.45) 35%,
+                rgba(0,0,0,0.20) 60%,
+                rgba(0,0,0,0.00) 75%);
+            filter: blur(8px);
+            z-index: -1; /* place behind the title text */
+            pointer-events: none;
+        }
+        /* Subtle horizontal lens flare overlays */
+        .menu-screen h1::after {
+            content: '';
+            position: absolute;
+            left: -10%;
+            top: 50%;
+            width: 90%;
+            height: 3px;
+            transform: translate(-30%, +50%);
+            background: linear-gradient(90deg, rgba(0,255,255,0), rgba(255,255,255,0.8), rgba(240,0,255,0));
+            filter: blur(3px);
+            opacity: 0.68;
+            pointer-events: none;
+            animation: lensFlareSweep 12s linear infinite;
+            z-index: 1; /* render above the text */
+        }
+        #objective::after {
+            content: '';
+            position: absolute;
+            left: -8%;
+            top: 50%;
+            width: 90%;
+            height: 3px;
+            transform: translate(-30%, +50%);
+            background: linear-gradient(90deg, rgba(0,255,255,0), rgba(255,255,255,0.7), rgba(240,0,255,0));
+            filter: blur(2px);
+            opacity: 0.68;
+            pointer-events: none;
+            animation: lensFlareSweep 6s linear infinite;
+            z-index: 1; /* render above the text within #objective */
+        }
+        @keyframes lensFlareSweep {
+            0% { transform: translate(-30%, -50%); }
+            100% { transform: translate(90%, -50%); }
         }
         
-        @keyframes pulseglow {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.8; }
+        @keyframes titlePulse {
+            0% {
+                opacity: 0.95;
+                text-shadow:
+                    0 0 24px #f0f,
+                    0 0 52px #f0f,
+                    0 0 90px #f0f,
+                    0 0 140px rgba(0,255,255,0.7);
+                filter: brightness(1.0);
+            }
+            50% {
+                opacity: 1;
+                text-shadow:
+                    0 0 36px #f0f,
+                    0 0 90px #f0f,
+                    0 0 160px #f0f,
+                    0 0 240px rgba(0,255,255,0.9);
+                filter: brightness(1.12);
+            }
+            100% {
+                opacity: 0.95;
+                text-shadow:
+                    0 0 24px #f0f,
+                    0 0 52px #f0f,
+                    0 0 90px #f0f,
+                    0 0 140px rgba(0,255,255,0.7);
+                filter: brightness(1.0);
+            }
         }
         
         @keyframes neonFlash {
@@ -232,17 +326,17 @@
         @keyframes crtBloom {
             0% {
                 box-shadow:
-                    0 0 4px #0ff,
                     0 0 8px #0ff,
-                    0 0 12px rgba(240, 0, 255, 0.4),
-                    inset 0 0 4px rgba(255, 255, 255, 0.15);
+                    0 0 16px #0ff,
+                    0 0 26px rgba(240, 0, 255, 0.5),
+                    inset 0 0 6px rgba(255, 255, 255, 0.2);
             }
             100% {
                 box-shadow:
-                    0 0 8px #0ff,
-                    0 0 16px #0ff,
-                    0 0 28px rgba(240, 0, 255, 0.65),
-                    inset 0 0 8px rgba(255, 255, 255, 0.3);
+                    0 0 14px #0ff,
+                    0 0 28px #0ff,
+                    0 0 48px rgba(240, 0, 255, 0.8),
+                    inset 0 0 12px rgba(255, 255, 255, 0.35);
             }
         }
         
@@ -259,11 +353,12 @@
             text-transform: uppercase;
             /* static bloom */
             box-shadow:
-                0 0 6px #0ff,
-                0 0 12px #0ff,
-                0 0 18px rgba(240, 0, 255, 0.6),
-                inset 0 0 6px rgba(255, 255, 255, 0.2);
-            animation: crtBloom 1.8s ease-in-out infinite alternate;
+                0 0 10px #0ff,
+                0 0 20px #0ff,
+                0 0 36px rgba(240, 0, 255, 0.75),
+                0 0 56px rgba(0, 255, 255, 0.6),
+                inset 0 0 10px rgba(255, 255, 255, 0.25);
+            animation: crtBloom 1.6s ease-in-out infinite alternate;
         }
         
         .menu-button:hover {
@@ -274,6 +369,22 @@
                 0 0 36px #0ff,
                 0 0 60px #0ff,
                 inset 0 0 12px rgba(255, 255, 255, 0.3);
+        }
+        /* Keyboard-selected menu button: bright white glowing thick border */
+        .menu-button.kb-selected {
+            border: 4px solid #fff !important;
+            transform: scale(1.08);
+            box-shadow:
+                0 0 18px #fff,
+                0 0 36px #fff,
+                0 0 64px rgba(255,255,255,0.95),
+                0 0 96px rgba(255,255,255,0.85),
+                inset 0 0 14px rgba(255,255,255,0.6);
+        }
+        /* Level select buttons (only these are reduced by 50%) */
+        .menu-button.level-select {
+            padding: 8px 20px; /* 50% of 15px 40px (rounded) */
+            font-size: 12px;   /* 50% of 24px */
         }
         
         .hidden {
@@ -287,6 +398,19 @@
         .hud-fade {
             transition: opacity 0.4s ease;
         }
+        /* Fullscreen fade layer for transitions (e.g., boot -> start screen) */
+        #screenFade {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #000;
+            z-index: 50; /* above menus */
+            pointer-events: none;
+            opacity: 1;
+            transition: opacity 2.5s ease;
+        }
     </style>
     <!-- WebGL libraries (used only if ENABLE_WEBGL is true) -->
     <script src="https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js" crossorigin="anonymous"></script>
@@ -296,33 +420,39 @@
 <body>
     <div id="gameContainer">
         <canvas id="gameCanvas"></canvas>
+        <!-- Black fade layer used to fade in start screen from boot -->
+        <div id="screenFade" class="hidden"></div>
         
         <div id="score" class="ui-overlay hidden">SCORE: 0</div>
-        <div id="hi" class="ui-overlay hidden">HI: 0</div>
-        <div id="combo" class="ui-overlay hidden">Combo: 0</div>
+        <div id="hi" class="ui-overlay hidden">HIGH: 0</div>
+        <div id="combo" class="ui-overlay hidden">COMBO: 0</div>
         <div id="lives" class="ui-overlay hidden">LIVES: 3</div>
         <div id="level" class="ui-overlay hidden">LEVEL: 1</div>
         <div id="stranded" class="ui-overlay hidden">STRANDED SHIP: 5/5</div>
         <div id="objective" class="ui-overlay hidden">PROTECT THE STRANDED SHIP!</div>
         <div id="powerup" class="ui-overlay hidden"></div>
-        <div id="controls" class="ui-overlay hidden">ARROW KEYS or WASD to move • SPACEBAR to shoot • ENTER to use power-up • P to pause</div>
+        <div id="controls" class="ui-overlay hidden">ARROW KEYS or AWD to move • SPACE to shoot • ENTER to use power-up</div>
         
         <div id="startScreen" class="menu-screen">
-            <p id="hiScoreDisplay" style="color:#0ff; font-size:20px; margin:0 0 10px 0; letter-spacing:2px;">HI-SCORE: <span id="hiScore">0</span></p>
+            <p id="hiScoreDisplay" style="color:#0ff; font-size:20px; margin:0 0 10px 0; letter-spacing:2px;">HIGH-SCORE: <span id="hiScore">0</span></p>
             <h1>ASTERAID</h1>
             <button class="menu-button" onclick="startGame()">START GAME</button>
             <div style="margin-top:16px; display:flex; flex-wrap: wrap; gap: 8px; justify-content: center;">
-                <button class="menu-button" onclick="startAtLevel(2)">LEVEL 2</button>
-                <button class="menu-button" onclick="startAtLevel(3)">LEVEL 3</button>
-                <button class="menu-button" onclick="startAtLevel(4)">LEVEL 4</button>
-                <button class="menu-button" onclick="startAtLevel(5)">LEVEL 5</button>
-                <button class="menu-button" onclick="startAtLevel(6)">LEVEL 6</button>
-                <button class="menu-button" onclick="startAtLevel(7)">LEVEL 7</button>
-                <button class="menu-button" onclick="startAtLevel(8)">LEVEL 8</button>
-                <button class="menu-button" onclick="startAtLevel(9)">LEVEL 9</button>
-                <button class="menu-button" onclick="startAtLevel(10)">LEVEL 10</button>
+                <button class="menu-button level-select" onclick="startAtLevel(2)">LEVEL 2</button>
+                <button class="menu-button level-select" onclick="startAtLevel(3)">LEVEL 3</button>
+                <button class="menu-button level-select" onclick="startAtLevel(4)">LEVEL 4</button>
+                <button class="menu-button level-select" onclick="startAtLevel(5)">LEVEL 5</button>
+                <button class="menu-button level-select" onclick="startAtLevel(6)">LEVEL 6</button>
+                <button class="menu-button level-select" onclick="startAtLevel(7)">LEVEL 7</button>
+                <button class="menu-button level-select" onclick="startAtLevel(8)">LEVEL 8</button>
+                <button class="menu-button level-select" onclick="startAtLevel(9)">LEVEL 9</button>
+                <button class="menu-button level-select" onclick="startAtLevel(10)">LEVEL 10</button>
+                <button class="menu-button level-select" onclick="startAtLevel(11)">LEVEL 11</button>
             </div>
-            <p id="tipText" style="color:#0f0; font-size:16px; margin-top:16px; max-width:800px;">Tip: will appear here.</p>
+            <p id="tipText">
+                <span id="tipA" class="tip-layer tip-visible">Tip will appear here.</span>
+                <span id="tipB" class="tip-layer"></span>
+            </p>
         </div>
         
         <div id="gameOverScreen" class="menu-screen hidden">
@@ -334,6 +464,9 @@
         <div id="pauseOverlay" class="menu-screen hidden">
             <h1>PAUSED</h1>
             <p style="color:#0ff; font-size:20px; margin-top:10px;">Press P to resume</p>
+            <div style="margin-top:18px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+                <button id="webglToggleBtn" class="menu-button" onclick="toggleWebGLSetting()">WEBGL: ON</button>
+            </div>
         </div>
         
         <!-- Upgrade selection overlay -->
@@ -363,12 +496,84 @@
         import { ColossusBoss } from './colossusBoss.js';
         import { CrystalTitanBoss } from './crystalTitanBoss.js';
         import { AlienCarrierBoss } from './alienCarrierBoss.js';
+        import { AlienMothershipBoss } from './alienMothershipBoss.js';
+        import { DreadshipBoss } from './dreadshipBoss.js';
+        import { AttractMode } from './attractMode.js';
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         // Optional WebGL renderer overlay (PixiJS) for post-processing and feedback effects
         let glRenderer = null;
+        // Attract/demo mode state
+        const ATTRACT_DELAY_MS = 1000; // 5 seconds of inactivity on start menu
+        let lastInputTime = performance.now();
+        const attract = new AttractMode({ canvas, ctx });
+        // Runtime flag (default from constants). Allows toggling without reload.
+        let webglEnabled = ENABLE_WEBGL;
+
+        // Rotating start screen tips (3s, crossfade) — user's original tips
+        const START_TIPS = [
+            'You can charge your attacks for a powerful shot, they combo with SHIELD.',
+            'Press ENTER to activate your current power-up shown at the bottom.',
+            'BOMB clears nearby asteroids. Use it when surrounded!',
+            'SHIELD protects you. While active, asteroids bounce off.',
+            'TELEPORT relocates you to a safe random spot. Great for escapes.',
+            'FLAK fires a wide spread. Good for clearing small asteroids.',
+            'RAINBOW leaves a damaging trail behind you. Keep moving!',
+            'INVISIBLE makes you hard to see and temporarily safe from hits.',
+            'LASER pierces through multiple asteroids in a line.',
+            'Only 4 power-ups can spawn at once so use them up.',
+            'Level 4 is a boss encounter! hell yeah!',
+            'Level 8 is a boss encounter! Pew pew!',
+            'Every 1000 points you can choose an upgrade!',
+            'If the stranded ship dies its game over, its that important!',
+            'Charged shot + SHIELD triggers a big explosion. Time it well!'
+        ];
+        let tipIntervalId = null;
+        let tipIndex = 0;
+        let tipActiveLayer = 'A'; // 'A' or 'B'
+        function setTipText(text, target) {
+            const a = document.getElementById('tipA');
+            const b = document.getElementById('tipB');
+            if (!a || !b) return;
+            const full = text ? ('Tip: ' + text) : '';
+            if (target === 'A') a.textContent = full; else b.textContent = full;
+        }
+        function showTipLayer(targetVisible) {
+            const a = document.getElementById('tipA');
+            const b = document.getElementById('tipB');
+            if (!a || !b) return;
+            if (targetVisible === 'A') {
+                a.classList.add('tip-visible');
+                b.classList.remove('tip-visible');
+            } else {
+                b.classList.add('tip-visible');
+                a.classList.remove('tip-visible');
+            }
+        }
+        function startTipRotation() {
+            try { stopTipRotation(); } catch (e) {}
+            // Initialize with first tip
+            tipIndex = 0;
+            tipActiveLayer = 'A';
+            const first = START_TIPS.length ? START_TIPS[0] : '';
+            setTipText(first, 'A');
+            setTipText('', 'B');
+            showTipLayer('A');
+            if (START_TIPS.length <= 1) return; // nothing to rotate
+            tipIntervalId = setInterval(() => {
+                const next = START_TIPS[(++tipIndex) % START_TIPS.length];
+                const incoming = (tipActiveLayer === 'A') ? 'B' : 'A';
+                // Put next text on hidden layer, then crossfade
+                setTipText(next, incoming);
+                showTipLayer(incoming);
+                tipActiveLayer = incoming;
+            }, 5000);
+        }
+        function stopTipRotation() {
+            if (tipIntervalId) { clearInterval(tipIntervalId); tipIntervalId = null; }
+        }
         function initWebGLIfEnabled() {
-            if (!ENABLE_WEBGL) return;
+            if (!webglEnabled) return;
             if (WEBGL_BACKEND !== 'pixi') return; // regl path not yet implemented
             try {
                 if (!window.PIXI) { console.warn('PIXI not loaded. WebGL overlay disabled.'); return; }
@@ -479,6 +684,11 @@
                 if (SCANLINE_ENABLED && SCANLINE_NOISE > 0 && F.NoiseFilter) {
                     try { noise = new F.NoiseFilter(SCANLINE_NOISE, 0.0); } catch (e) { console.warn('NoiseFilter failed:', e); noise = null; }
                 }
+                // Launch motion blur (zoom-style)
+                let zoom = null;
+                if (F.ZoomBlurFilter) {
+                    try { zoom = new F.ZoomBlurFilter({ strength: 0.0, center: [canvas.width * 0.5, canvas.height * 0.5], innerRadius: 0 }); } catch (e) { console.warn('ZoomBlurFilter failed:', e); zoom = null; }
+                }
                 // BulgePinch reserved for dynamic shield refraction only
                 let bulge = null;
                 if (F.BulgePinchFilter) {
@@ -489,6 +699,7 @@
                 if (advBloom) filters.push(advBloom); else if (simpleBloom) filters.push(simpleBloom);
                 if (rgb) filters.push(rgb);
                 if (crt) filters.push(crt);
+                if (zoom) filters.push(zoom);
                 if (vignette) filters.push(vignette);
                 if (noise) filters.push(noise);
                 if (bulge) filters.push(bulge);
@@ -510,7 +721,8 @@
                     sourceSprite.width = canvas.width; sourceSprite.height = canvas.height;
                     feedbackSprite.width = canvas.width; feedbackSprite.height = canvas.height;
                     outputSprite.width = canvas.width; outputSprite.height = canvas.height;
-                    if (bulge) bulge.center = [canvas.width * 0.5, canvas.height * 0.5];
+                        if (bulge) bulge.center = [canvas.width * 0.5, canvas.height * 0.5];
+                    if (zoom) zoom.center = [canvas.width * 0.5, canvas.height * 0.5];
                     recreateRenderTargets();
                 }
                 window.addEventListener('resize', resizeOverlay);
@@ -521,6 +733,7 @@
                 let pulseNoise = 0;
                 let pulseVignette = 0;
                 let shieldRefraction = 0; // 0..1
+                const defaultFeedbackAlpha = feedbackSprite.alpha;
 
                 glRenderer = {
                     backend: WEBGL_BACKEND,
@@ -531,6 +744,14 @@
                     outputSprite,
                     sourceTexture: sourceTexture.baseTexture,
                     filters,
+                    // Clean up overlay and detach resources
+                    destroy: () => {
+                        try { window.removeEventListener('resize', resizeOverlay); } catch (e) {}
+                        try {
+                            if (app && app.view && app.view.parentNode) app.view.parentNode.removeChild(app.view);
+                        } catch (e) {}
+                        try { app.destroy(true, { children: true, texture: true, baseTexture: true }); } catch (e) {}
+                    },
                     update: (state = {}) => {
                         // Sync dims if changed
                         if (app.renderer.width !== canvas.width || app.renderer.height !== canvas.height) {
@@ -564,6 +785,12 @@
                             }
                         }
 
+                        // Subtle bloom/chromatic pulse while shield is active
+                        if (state && state.shielded) {
+                            pulseBloom = Math.max(pulseBloom, 0.12);
+                            pulseChrom = Math.max(pulseChrom, 0.03);
+                        }
+
                         // Apply pulses to filters
                         if (advBloom) advBloom.bloomScale = 0.9 + pulseBloom * 1.5;
                         if (simpleBloom && !advBloom) simpleBloom.blur = 2 + pulseBloom * 6;
@@ -589,6 +816,21 @@
                         // Render to screen
                         app.render();
                     },
+                    // Launch-only zoom blur strength: 0..1.2 typical
+                    setLaunchBlur: (amount = 0) => {
+                        if (zoom) {
+                            try { zoom.strength = Math.max(0, amount); } catch (e) {}
+                        } else if (advBloom) {
+                            // Fallback: lightly increase bloom scale to simulate smear
+                            try { advBloom.bloomScale = 0.9 + amount * 1.2; } catch (e) {}
+                        } else if (simpleBloom) {
+                            try { simpleBloom.blur = 2 + amount * 8; } catch (e) {}
+                        }
+                    },
+                    setFeedbackAlpha: (alpha = defaultFeedbackAlpha) => {
+                        feedbackSprite.alpha = Math.max(0, Math.min(1, alpha));
+                    },
+                    resetFeedbackAlpha: () => { feedbackSprite.alpha = defaultFeedbackAlpha; },
                     // Hooks to modulate effects at runtime
                     setBloomScale: (scale) => {
                         if (advBloom) advBloom.bloomScale = scale;
@@ -687,6 +929,21 @@
         canvas.width = 1280;
         canvas.height = 720;
         
+        // Scale the fixed-resolution canvas to fill the window while preserving 16:9
+        const container = document.getElementById('gameContainer');
+        function updateCanvasScale() {
+            const w = window.innerWidth || document.documentElement.clientWidth || document.body.clientWidth;
+            const h = window.innerHeight || document.documentElement.clientHeight || document.body.clientHeight;
+            const scale = Math.min(w / canvas.width, h / canvas.height);
+            // Ensure the base (unscaled) size is the logical resolution
+            container.style.width = canvas.width + 'px';
+            container.style.height = canvas.height + 'px';
+            // Center and scale
+            container.style.transform = `translate(-50%, -50%) scale(${scale})`;
+        }
+        // Initial scale
+        updateCanvasScale();
+        
         // Game variables
         let gameState = 'boot';
         // Launch animation state
@@ -735,9 +992,77 @@
             upgradeBtn1.innerHTML = `<div style="font-size:22px;">${u1.name}</div><div style=\"font-size:14px; opacity:0.9; margin-top:6px; color:#0ff\">${u1.desc}</div>`;
             upgradeBtn2.innerHTML = `<div style="font-size:22px;">${u2.name}</div><div style=\"font-size:14px; opacity:0.9; margin-top:6px; color:#0ff\">${u2.desc}</div>`;
             upgradeOverlay.classList.remove('hidden');
+            initUpgradeMenuSelection();
         }
         function hideUpgradeOverlay() {
             upgradeOverlay.classList.add('hidden');
+            clearMenuSelection();
+        }
+
+        // --- Menu keyboard navigation (start + upgrade screens) ---
+        let menuSelection = { active: null, buttons: [], index: 0 };
+        function setMenuButtons(buttons) {
+            // Clear existing highlight
+            if (menuSelection.buttons && menuSelection.buttons.length) {
+                menuSelection.buttons.forEach(b => b.classList.remove('kb-selected'));
+            }
+            menuSelection.buttons = Array.from(buttons || []);
+            menuSelection.index = 0;
+            highlightMenuSelection();
+        }
+        function highlightMenuSelection() {
+            if (!menuSelection.buttons || menuSelection.buttons.length === 0) return;
+            menuSelection.buttons.forEach((b, i) => {
+                if (i === menuSelection.index) b.classList.add('kb-selected');
+                else b.classList.remove('kb-selected');
+            });
+        }
+        function moveMenuSelection(delta) {
+            if (!menuSelection.buttons || menuSelection.buttons.length === 0) return;
+            const n = menuSelection.buttons.length;
+            // If no button is currently selected, choose based on direction:
+            // Left/Up -> leftmost (0), Right/Down -> rightmost (n-1)
+            if (menuSelection.index === -1) {
+                menuSelection.index = (delta < 0) ? 0 : (n - 1);
+                highlightMenuSelection();
+                return;
+            }
+            menuSelection.index = ((menuSelection.index + delta) % n + n) % n; // wrap
+            highlightMenuSelection();
+        }
+        function activateMenuSelection() {
+            if (!menuSelection.buttons || menuSelection.buttons.length === 0) return;
+            const btn = menuSelection.buttons[menuSelection.index];
+            if (btn && typeof btn.click === 'function') btn.click();
+        }
+        function initStartMenuSelection() {
+            const start = document.getElementById('startScreen');
+            if (!start || start.classList.contains('hidden')) return;
+            menuSelection.active = 'start';
+            const btns = start.querySelectorAll('.menu-button');
+            setMenuButtons(btns);
+        }
+        function initUpgradeMenuSelection() {
+            if (upgradeOverlay.classList.contains('hidden')) return;
+            menuSelection.active = 'upgrade';
+            const btns = [upgradeBtn1, upgradeBtn2];
+            setMenuButtons(btns);
+            // Start with no default selection to avoid accidental Space activation
+            menuSelection.index = -1;
+            highlightMenuSelection();
+        }
+        function initPauseMenuSelection() {
+            const po = document.getElementById('pauseOverlay');
+            if (!po || po.classList.contains('hidden')) return;
+            menuSelection.active = 'pause';
+            const btns = po.querySelectorAll('.menu-button');
+            setMenuButtons(btns);
+        }
+        function clearMenuSelection() {
+            if (menuSelection.buttons && menuSelection.buttons.length) {
+                menuSelection.buttons.forEach(b => b.classList.remove('kb-selected'));
+            }
+            menuSelection = { active: null, buttons: [], index: 0 };
         }
 
         // --- Inter-level starfield warp state ---
@@ -831,9 +1156,38 @@
         let level9Spawned = false; // ensure spawn only once for level 9
         let level10Spawned = false; // ensure spawn only once for level 10
         let level11Spawned = false; // ensure spawn only once for level 11
+        let level12Spawned = false; // ensure spawn only once for level 12
         let levelMessageTimer = 0; // frames to show objective neon message
         let levelMessageText = "";
         let hiScore = 0; // persistent high score
+        // Reusable HUD message helper for objectives/alerts
+        function showHUDMessage(text, frames = 240) {
+            levelMessageText = text;
+            levelMessageTimer = frames;
+        }
+        // Auto-fit objective text to a single line by shrinking font size as needed
+        const OBJECTIVE_BASE_FONT_PX = 28;
+        const OBJECTIVE_MIN_FONT_PX = 12;
+        function fitObjectiveSingleLine() {
+            const objectiveEl = document.getElementById('objective');
+            const container = document.getElementById('gameContainer');
+            if (!objectiveEl || !container) return;
+            if (objectiveEl.classList.contains('hidden')) return; // only fit when visible
+            // reset to base size before measuring
+            objectiveEl.style.fontSize = OBJECTIVE_BASE_FONT_PX + 'px';
+            // measure required width at base size
+            const containerWidth = Math.max(0, container.clientWidth - 24); // 12px side padding
+            const needed = objectiveEl.scrollWidth;
+            if (needed > containerWidth && needed > 0) {
+                const scale = containerWidth / needed;
+                const target = Math.floor(OBJECTIVE_BASE_FONT_PX * scale);
+                objectiveEl.style.fontSize = Math.max(OBJECTIVE_MIN_FONT_PX, target) + 'px';
+            }
+        }
+        window.addEventListener('resize', () => {
+            updateCanvasScale();
+            fitObjectiveSingleLine();
+        });
         // UI effect timers
         let levelGlowTimer = 0; // frames of level label pulsing after level advance
         let hiGlowTimer = 0; // frames of score glow after beating hi-score (3s)
@@ -863,7 +1217,7 @@
         let spaceHoldTime = 0;
         let paused = false;
 
-        // Initialize HI-SCORE and random tip on the start screen
+        // Initialize HI-SCORE on the start screen
         (function initMenuInfo() {
             try {
                 const saved = localStorage.getItem('asteraidHiScore');
@@ -873,24 +1227,6 @@
             }
             const hiEl = document.getElementById('hiScore');
             if (hiEl) hiEl.textContent = hiScore;
-            const tips = [
-                'Hold SPACE to charge a powerful shot. Charged shots have recoil and can combo with SHIELD.',
-                'Press ENTER to activate your current power-up shown at the bottom.',
-                'BOMB clears nearby asteroids. Use it when surrounded!',
-                'SHIELD protects you. While active, asteroids bounce off without taking damage.',
-                'TELEPORT relocates you to a safe random spot. Great for escapes.',
-                'FLAK fires a wide spread. Good for clearing small asteroids.',
-                'RAINBOW leaves a damaging trail behind you. Keep moving!',
-                'INVISIBLE makes you hard to see and temporarily safe from hits.',
-                'LASER pierces through multiple asteroids in a line.',
-                'Only 4 power-ups can spawn at once so use them up.',
-                'Level 4 is a boss encounter! hell yeah!',
-                'Level 8 is a boss encounter! Pew pew!',
-                'At the end of every level you can choose an upgrade!',
-                'Charged shot + SHIELD triggers a big explosion. Time it well!'
-            ];
-            const tipEl = document.getElementById('tipText');
-            if (tipEl) tipEl.textContent = 'Tip: ' + tips[Math.floor(Math.random() * tips.length)];
         })();
         
         // setHUDVisible imported from utils.js
@@ -918,6 +1254,9 @@
         let mines = [];
         let stars = [];
         let shootingStars = [];
+        let fastShootingStars = [];
+        let backgroundComets = [];
+        let backgroundSatellites = [];
         // Pre-rendered per-level background decorations (nebulae/planets/galaxies)
         let backgroundCanvas = null;
         let backgroundCtx = null;
@@ -989,267 +1328,7 @@
 
         // Drone moved to drones.js
 
-        // Dreadship Boss (Level 8)
-        class DreadshipBoss {
-            constructor() {
-                this.x = canvas.width / 2;
-                this.y = canvas.height / 2;
-                this.hullRadius = 110;
-                this.coreRadius = 42;
-                this.coreHealth = 12;
-                this.rotate = 0;
-                this.rotateSpeed = 0.007;
-                this.defeated = false;
-                this.spawnTime = frameCount;
-                // Slow roaming movement within central 60% of the canvas
-                this.moveSpeed = 0.6;
-                this.pickNewTarget();
-
-                this.turrets = [];
-                const count = 3;
-                for (let i = 0; i < count; i++) {
-                    this.turrets.push({ angle: (Math.PI * 2 * i) / count, hits: 3, radius: 24, fireCooldown: Math.floor((60 + Math.floor(Math.random()*20)) * 1.5) });
-                }
-
-                this.laserWarningTimer = 0;
-                this.laserActiveTimer = 0;
-                this.laserAngle = 0;
-                this.laserSweepSpeed = 0.04;
-                this.laserCooldown = 300;
-                this.coreExposedTimer = 0;
-
-                this.droneCooldown = 200;
-            }
-            turretPositions() {
-                return this.turrets.map(t => ({ x: this.x + Math.cos(this.rotate + t.angle) * (this.hullRadius - 10), y: this.y + Math.sin(this.rotate + t.angle) * (this.hullRadius - 10), radius: t.radius, ref: t }));
-            }
-            pickNewTarget() {
-                const mx = canvas.width * 0.2;
-                const my = canvas.height * 0.2;
-                this.targetX = mx + Math.random() * (canvas.width * 0.6);
-                this.targetY = my + Math.random() * (canvas.height * 0.6);
-            }
-            update() {
-                this.rotate += this.rotateSpeed;
-                // Move slowly toward target; retarget when close
-                if (typeof this.targetX === 'number' && typeof this.targetY === 'number') {
-                    const dx = this.targetX - this.x;
-                    const dy = this.targetY - this.y;
-                    const dist = Math.hypot(dx, dy);
-                    if (dist < 8) {
-                        this.pickNewTarget();
-                    } else if (dist > 0) {
-                        const step = Math.min(this.moveSpeed, dist);
-                        this.x += (dx / dist) * step;
-                        this.y += (dy / dist) * step;
-                    }
-                }
-                const accel = this.turrets.length <= 1 ? 0.6 : (this.turrets.length === 2 ? 0.3 : 0);
-                for (let t of this.turrets) {
-                    if (t.fireCooldown > 0) t.fireCooldown--;
-                    if (t.fireCooldown === 0) {
-                        const posX = this.x + Math.cos(this.rotate + t.angle) * (this.hullRadius - 10);
-                        const posY = this.y + Math.sin(this.rotate + t.angle) * (this.hullRadius - 10);
-                        const base = Math.atan2(player.y - posY, player.x - posX);
-                        for (let i = -2; i <= 2; i++) enemyBullets.push(new EnemyBullet(posX, posY, base + i * 0.09, 5.5));
-                        t.fireCooldown = Math.floor((90 - Math.floor(20 * accel)) * 1.5);
-                    }
-                }
-                if (this.laserActiveTimer > 0) {
-                    this.laserActiveTimer--;
-                    this.laserAngle += this.laserSweepSpeed;
-                    if (player.invulnerable === 0 && player.shielded === 0 && player.invisible === 0) {
-                        const x2 = this.x + Math.cos(this.laserAngle) * 2000;
-                        const y2 = this.y + Math.sin(this.laserAngle) * 2000;
-                        if (lineCircleCollision(this.x, this.y, x2, y2, player.x, player.y, player.radius)) {
-                            takePlayerHit();
-                        }
-                    }
-                    if (this.laserActiveTimer === 0) {
-                        this.coreExposedTimer = 120;
-                        shakeFrames = Math.max(shakeFrames, 12);
-                        shakeIntensity = Math.max(shakeIntensity, 4);
-                    }
-                } else if (this.laserWarningTimer > 0) {
-                    this.laserWarningTimer--;
-                    if (this.laserWarningTimer === 0) {
-                        this.laserActiveTimer = 36;
-                        const aim = Math.atan2(player.y - this.y, player.x - this.x);
-                        this.laserAngle = aim - Math.PI * 0.7;
-                    }
-                } else {
-                    if (this.laserCooldown > 0) this.laserCooldown--;
-                    if (this.laserCooldown === 0) { this.laserWarningTimer = 45; this.laserCooldown = 360; }
-                }
-                if (this.coreExposedTimer > 0) this.coreExposedTimer--;
-                if (this.droneCooldown > 0) this.droneCooldown--;
-                if (this.droneCooldown === 0) {
-                    const active = drones.filter(d => !d.dead).length;
-                    if (active < 6) {
-                        const a = Math.random() * Math.PI * 2;
-                        const sx = this.x + Math.cos(a) * (this.hullRadius + 10);
-                        const sy = this.y + Math.sin(a) * (this.hullRadius + 10);
-                        const d = new Drone(sx, sy);
-                        d.maxSpeed *= 1.3; // 30% faster drones for Dreadship
-                        drones.push(d);
-                    }
-                    this.droneCooldown = 200;
-                }
-            }
-            draw() {
-                ctx.save();
-                ctx.translate(this.x, this.y);
-                ctx.rotate(this.rotate);
-                const hullR = this.hullRadius;
-                for (let i = 3; i >= 0; i--) {
-                    const c = ['#0ff','#0df','#09f','#06f'][i];
-                    ctx.globalAlpha = i===0 ? 1 : 0.35;
-                    ctx.shadowBlur = 20 - i * 4;
-                    ctx.shadowColor = c; ctx.strokeStyle = c; ctx.lineWidth = i===0 ? 3 : 1.6;
-                    ctx.beginPath(); ctx.ellipse(0, 0, hullR + i*6, hullR*0.6 + i*4, 0, 0, Math.PI*2); ctx.stroke();
-                }
-                ctx.shadowBlur = 0; ctx.globalAlpha = 1;
-                const coreGlow = this.coreExposedTimer > 0 ? '#0f0' : 'rgba(0,255,0,0.65)';
-                ctx.shadowBlur = this.coreExposedTimer > 0 ? 18 : 8;
-                ctx.shadowColor = coreGlow; ctx.fillStyle = coreGlow;
-                ctx.beginPath(); ctx.arc(0, 0, this.coreRadius * 0.6, 0, Math.PI*2); ctx.fill();
-                ctx.shadowBlur = 0;
-                ctx.restore();
-                for (let pos of this.turretPositions()) {
-                    const glow = 14 + Math.sin(frameCount * 0.2) * 3;
-                    for (let i = 2; i >= 0; i--) {
-                        ctx.globalAlpha = i === 0 ? 1 : 0.4;
-                        ctx.shadowBlur = glow - i * 4;
-                        ctx.shadowColor = '#fa3';
-                        ctx.strokeStyle = '#fa3'; ctx.lineWidth = i === 0 ? 2.5 : 1.2;
-                        ctx.beginPath(); ctx.arc(pos.x, pos.y, pos.radius - i * 3, 0, Math.PI * 2); ctx.stroke();
-                    }
-                    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
-                }
-                if (this.laserWarningTimer > 0 || this.laserActiveTimer > 0) {
-                    const warn = this.laserWarningTimer > 0;
-                    const color = warn ? '#ff0' : '#f66';
-                    const width = warn ? 3 : 8;
-                    const a = warn ? (Math.atan2(player.y - this.y, player.x - this.x)) : this.laserAngle;
-                    const x2 = this.x + Math.cos(a) * 2000;
-                    const y2 = this.y + Math.sin(a) * 2000;
-                    ctx.save();
-                    ctx.strokeStyle = color; ctx.shadowColor = color; ctx.shadowBlur = warn ? 10 : 16; ctx.lineWidth = width; ctx.globalAlpha = warn ? 0.8 : 1;
-                    ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(x2, y2); ctx.stroke();
-                    ctx.restore();
-                }
-            }
-            handleBulletCollision(bullet) {
-                for (let pos of this.turretPositions()) {
-                    const dx = bullet.x - pos.x, dy = bullet.y - pos.y;
-                    if (Math.hypot(dx, dy) < pos.radius + bullet.radius) {
-                        pos.ref.hits--;
-                        if (pos.ref.hits <= 0) {
-                            createExplosion(pos.x, pos.y, 70, '#fa3');
-                            // no points for turret hits (fixed award on defeat)
-                            this.maybeDropPowerup(pos.x, pos.y, 0.2);
-                            this.turrets = this.turrets.filter(t => t !== pos.ref);
-                            shakeFrames = Math.max(shakeFrames, 10);
-                            shakeIntensity = Math.max(shakeIntensity, 3);
-                        }
-                        return true;
-                    }
-                }
-                if (this.coreExposedTimer > 0) {
-                    const dx = bullet.x - this.x, dy = bullet.y - this.y;
-                    if (Math.hypot(dx, dy) < this.coreRadius + bullet.radius) {
-                        this.coreHealth--;
-                        // no points for core hits (fixed award on defeat)
-                        createExplosion(this.x, this.y, 90, '#f0f');
-                        if (this.coreHealth <= 0) this.onDefeated();
-                        return true;
-                    }
-                }
-                return false;
-            }
-            handleParticleDamage(particle) {
-                let hit = false;
-                for (let pos of this.turretPositions()) {
-                    const dx = particle.x - pos.x, dy = particle.y - pos.y;
-                    if (Math.hypot(dx, dy) < pos.radius + 12) {
-                        pos.ref.hits--;
-                        if (pos.ref.hits <= 0) {
-                            createExplosion(pos.x, pos.y, 70, '#fa3');
-                            // no points for turret hits (fixed award on defeat)
-                            this.turrets = this.turrets.filter(t => t !== pos.ref);
-                        }
-                        hit = true; break;
-                    }
-                }
-                if (!hit && this.coreExposedTimer > 0) {
-                    const dx = particle.x - this.x, dy = particle.y - this.y;
-                    if (Math.hypot(dx, dy) < this.coreRadius + 12) {
-                        this.coreHealth = Math.max(0, this.coreHealth - 1);
-                        if (this.coreHealth === 0) this.onDefeated();
-                    }
-                }
-            }
-            hitByLaserLine(x1, y1, x2, y2) {
-                let any = false;
-                for (let pos of this.turretPositions()) {
-                    if (lineCircleCollision(x1, y1, x2, y2, pos.x, pos.y, pos.radius)) {
-                        pos.ref.hits--;
-                        any = true;
-                        if (pos.ref.hits <= 0) {
-                            createExplosion(pos.x, pos.y, 70, '#fa3');
-                            // no points for turret hits (fixed award on defeat)
-                            this.maybeDropPowerup(pos.x, pos.y, 0.2);
-                            this.turrets = this.turrets.filter(t => t !== pos.ref);
-                        }
-                    }
-                }
-                if (this.coreExposedTimer > 0 && lineCircleCollision(x1, y1, x2, y2, this.x, this.y, this.coreRadius)) {
-                    this.coreHealth = Math.max(0, this.coreHealth - 2);
-                    // no points for core hits (fixed award on defeat)
-                    createExplosion(this.x, this.y, 90, '#f0f');
-                    any = true;
-                    if (this.coreHealth === 0) this.onDefeated();
-                }
-                return any;
-            }
-            collidesWithCircle(cx, cy, cr) {
-                for (let pos of this.turretPositions()) { if (Math.hypot(cx - pos.x, cy - pos.y) < cr + pos.radius) return true; }
-                return Math.hypot(cx - this.x, cy - this.y) < cr + this.hullRadius;
-            }
-            isDefeated() { return this.defeated; }
-            onDefeated() {
-                if (this.defeated) return; this.defeated = true;
-                awardPoints(500, this.x, this.y); // fixed award only on defeat
-                createExplosion(this.x, this.y, this.hullRadius * 2.6, '#f0f');
-                shakeFrames = Math.max(shakeFrames, 28);
-                shakeIntensity = Math.max(shakeIntensity, 9);
-                const drops = 2 + Math.floor(Math.random() * 2);
-                for (let i = 0; i < drops; i++) {
-                    const ang = Math.random() * Math.PI * 2;
-                    const dist = 40 + Math.random() * 70;
-                    const dx = this.x + Math.cos(ang) * dist;
-                    const dy = this.y + Math.sin(ang) * dist;
-                    const type = this.pickPowerupType();
-                    if (powerups.length < 4) powerups.push(new Powerup(dx, dy, type));
-                }
-                // 50% chance to drop +1 life power-up
-                if (Math.random() < 0.5 && powerups.length < 4) {
-                    powerups.push(new Powerup(this.x, this.y, 'life'));
-                }
-                // Clear boss bullets and spawned drones on defeat (parity with other bosses)
-                if (enemyBullets) enemyBullets.length = 0;
-                if (drones) drones.length = 0;
-            }
-            maybeDropPowerup(x, y, chance) { if (powerups.length >= 4) return; if (Math.random() < chance) { const type = this.pickPowerupType(); powerups.push(new Powerup(x, y, type)); } }
-            pickPowerupType() {
-                const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
-                const weights = [20, 30, 20, 20, 15, 10, 10, 10];
-                const total = weights.reduce((a,b)=>a+b,0);
-                let r = Math.random() * total;
-                for (let i = 0; i < types.length; i++) { r -= weights[i]; if (r <= 0) return types[i]; }
-                return 'shield';
-            }
-        }
+        // DreadshipBoss moved to dreadshipBoss.js
 
         // ColossusBoss moved to colossusBoss.js
 
@@ -1263,13 +1342,35 @@
             for (let layer = 0; layer < 3; layer++) {
                 const count = base + layer * 10 + Math.floor(Math.random() * 10);
                 for (let i = 0; i < count; i++) {
+                    // Subtle per-star color variance
+                    let color = '#ffffff';
+                    const r = Math.random();
+                    if (r < 0.18) {
+                        // cool blue-white
+                        const g = 240 + Math.floor(Math.random() * 15);
+                        color = `rgb(${230 + Math.floor(Math.random() * 10)},${g},255)`;
+                    } else if (r < 0.30) {
+                        // warm yellow-white
+                        const rch = 255;
+                        const gch = 245 + Math.floor(Math.random() * 10);
+                        const bch = 220 + Math.floor(Math.random() * 15);
+                        color = `rgb(${rch},${gch},${bch})`;
+                    } else if (r < 0.36) {
+                        // faint red-white
+                        color = `rgb(255,235,235)`;
+                    } else {
+                        // near-white
+                        const base = 245 + Math.floor(Math.random() * 10);
+                        color = `rgb(${base},${base},${base + 5})`;
+                    }
                     stars.push({
                         x: Math.random() * canvas.width,
                         y: Math.random() * canvas.height,
                         size: Math.random() * 2,
                         // Slightly brighter baseline across all levels
                         brightness: Math.random() * 0.35 + 0.65,
-                        layer: layer
+                        layer: layer,
+                        color
                     });
                 }
             }
@@ -1305,6 +1406,48 @@
             const R = Math.random;
             const W = backgroundCanvas.width, H = backgroundCanvas.height;
 
+            // Faint dust bands (soft, wide, near-horizontal)
+            let bandCount = (R() < 0.6) ? 1 : (R() < 0.2 ? 2 : 0);
+            if (gameState === 'start' && bandCount > 0) bandCount = Math.ceil(bandCount * 1.5);
+            for (let i = 0; i < bandCount; i++) {
+                const y = 60 + R() * (H - 120);
+                const h = 80 + R() * 140; // thickness
+                const angle = (R() * 0.3 - 0.15); // slight tilt
+                bctx.save();
+                bctx.translate(W * 0.5, y);
+                bctx.rotate(angle);
+                const grad = bctx.createLinearGradient(0, -h * 0.5, 0, h * 0.5);
+                const mid = (gameState === 'start') ? 0.09 : 0.07; // slightly brighter on start screen (more visible)
+                grad.addColorStop(0, 'rgba(220,240,255,0)');
+                grad.addColorStop(0.5, `rgba(220,240,255,${mid})`);
+                grad.addColorStop(1, 'rgba(220,240,255,0)');
+                bctx.fillStyle = grad;
+                bctx.fillRect(-W, -h * 0.5, W * 2, h);
+                bctx.restore();
+            }
+
+            /* Constellations removed per user request */
+            // Planetary limb silhouette: huge faint arc from an edge (rare)
+            {
+                const limbChance = (gameState === 'start') ? Math.min(1, 0.5 * 1.5) : 0.5;
+                if (R() < limbChance) {
+                const edge = Math.floor(R() * 4); // 0: left, 1: right, 2: top, 3: bottom
+                const R0 = Math.max(W, H) * (1.4 + R() * 0.6); // very large radius
+                let cx = W * 0.5, cy = H * 0.5;
+                if (edge === 0) cx = -R0 + R() * 80; // left
+                if (edge === 1) cx = W + R0 - R() * 80; // right
+                if (edge === 2) cy = -R0 + R() * 80; // top
+                if (edge === 3) cy = H + R0 - R() * 80; // bottom
+                const gradPlanet = bctx.createRadialGradient(cx, cy, R0 * 0.97, cx, cy, R0);
+                gradPlanet.addColorStop(0, 'rgba(0,0,0,0)');
+                gradPlanet.addColorStop(1, 'rgba(200,220,255,0.08)');
+                bctx.fillStyle = gradPlanet;
+                bctx.beginPath();
+                bctx.rect(0, 0, W, H);
+                bctx.fill();
+                }
+            }
+
             // Palette options for nebulas/galaxies (very faint)
             const palettes = [
                 ['rgba(0,180,255,', 'rgba(180,0,255,'],
@@ -1331,24 +1474,34 @@
                 bctx.restore();
             }
 
-            // Nebulas: 0-2 per level, faint, large ellipses (80% of levels show nebulas)
-            const nebulaCount = (R() < 0.80) ? (1 + Math.floor(R() * 2)) : 0; // 80% chance of 1-2
+            // Nebulas: always present (1-2), faint, large ellipses
+            let nebulaCount = 1 + Math.floor(R() * 2); // 100% chance of 1-2
+            if (gameState === 'start') nebulaCount = Math.ceil(nebulaCount * 1.5);
             for (let i = 0; i < nebulaCount; i++) {
-                const rx = 160 + R() * 200;
+                // 25% larger overall
+                const rxBase = 160 + R() * 200;
+                const rx = rxBase * 1.25;
                 const ry = rx * (0.5 + R() * 0.6);
                 const x = 100 + R() * (W - 200);
                 const y = 100 + R() * (H - 200);
                 const ang = R() * Math.PI;
                 const pal = palettes[(Math.floor(R() * palettes.length))];
-                ellipseGlow(x, y, rx, ry, ang, pal[0], pal[1], 0.08, 0.0);
+                // Slightly brighter on start screen
+                const nebulaAlphaCenter = (gameState === 'start') ? Math.min(0.4, 0.08 * 1.5) : 0.08;
+                ellipseGlow(x, y, rx, ry, ang, pal[0], pal[1], nebulaAlphaCenter, 0.0);
                 // Layer a second softer pass for depth
-                ellipseGlow(x + (R() * 40 - 20), y + (R() * 40 - 20), rx * (0.8 + R() * 0.3), ry * (0.8 + R() * 0.3), ang + (R() * 0.3 - 0.15), pal[1], pal[0], 0.05, 0.0);
+                const rx2 = rx * (0.8 + R() * 0.3);
+                const ry2 = ry * (0.8 + R() * 0.3);
+                const nebulaAlphaCenter2 = (gameState === 'start') ? Math.min(0.4, 0.05 * 1.5) : 0.05;
+                ellipseGlow(x + (R() * 40 - 20), y + (R() * 40 - 20), rx2, ry2, ang + (R() * 0.3 - 0.15), pal[1], pal[0], nebulaAlphaCenter2, 0.0);
             }
 
             // Galaxies: 0-1 elongated bright core + speckles
-            if (R() < 0.35) {
-                const rx = 140 + R() * 160;
-                const ry = rx * (0.35 + R() * 0.25);
+            {
+                const galaxyChance = (gameState === 'start') ? Math.min(1, 0.5 * 1.5) : 0.5;
+                if (R() < galaxyChance) {
+                const rx = 180 + R() * 180; // larger core 180..360
+                const ry = rx * (0.4 + R() * 0.3); // slightly thicker 0.4..0.7
                 const x = 120 + R() * (W - 240);
                 const y = 90 + R() * (H - 180);
                 const ang = R() * Math.PI;
@@ -1359,18 +1512,23 @@
                 bctx.rotate(ang);
                 bctx.scale(1, ry / rx);
                 bctx.fillStyle = 'rgba(255,255,255,0.25)';
-                for (let i = 0; i < 60; i++) {
-                    const r = R() * rx * 0.8;
+                let speckles = 90;
+                if (gameState === 'start') speckles = Math.ceil(speckles * 1.5);
+                for (let i = 0; i < speckles; i++) { // denser speckles
+                    const r = R() * rx * 0.85;
                     const th = R() * Math.PI * 2;
                     const px = Math.cos(th) * r;
                     const py = Math.sin(th) * r;
                     bctx.fillRect(px, py, 1, 1);
                 }
                 bctx.restore();
+                }
             }
 
             // Planets/Moons: 0-2 small faint discs near edges
-            const planetCount = (R() < 0.6) ? Math.floor(R() * 3) : 0;
+            const planetAppearChance = (gameState === 'start') ? Math.min(1, 0.6 * 1.5) : 0.6;
+            let planetCount = (R() < planetAppearChance) ? Math.floor(R() * 3) : 0;
+            if (gameState === 'start' && planetCount > 0) planetCount = Math.ceil(planetCount * 1.5);
             for (let i = 0; i < planetCount; i++) {
                 const r = 18 + R() * 36;
                 const margin = 60;
@@ -1383,16 +1541,7 @@
                 bctx.beginPath();
                 bctx.arc(x, y, r, 0, Math.PI * 2);
                 bctx.fill();
-                // Soft glow
-                bctx.save();
-                bctx.shadowBlur = 20;
-                bctx.shadowColor = 'rgba(180,220,255,0.25)';
-                bctx.strokeStyle = 'rgba(200,220,255,0.12)';
-                bctx.lineWidth = 2;
-                bctx.beginPath();
-                bctx.arc(x, y, r + 2, 0, Math.PI * 2);
-                bctx.stroke();
-                bctx.restore();
+                // Outline stroke removed per user request (keep subtle core fill only)
             }
         }
         
@@ -1402,6 +1551,79 @@
             if (backgroundCanvas) {
                 ctx.drawImage(backgroundCanvas, 0, 0);
             }
+            // Nebula "breath" overlay: very faint, slow pulsing
+            (function(){
+                const t = (frameCount || 0) * 0.002;
+                const a = (gameState === 'start') ? 0.035 : 0.025;
+                const pulse = a * (0.5 + 0.5 * Math.sin(t));
+                const grad = ctx.createRadialGradient(canvas.width*0.55, canvas.height*0.45, 0, canvas.width*0.55, canvas.height*0.45, Math.max(canvas.width, canvas.height)*0.7);
+                grad.addColorStop(0, `rgba(120,180,255,${(pulse*0.6).toFixed(3)})`);
+                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.save();
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.restore();
+            })();
+
+            // Slow-moving background satellites (dark silhouettes)
+            if (Math.random() < 0.0005) {
+                const y = 20 + Math.random() * (canvas.height - 40);
+                const w = 6 + Math.random() * 8;
+                const h = 2 + Math.random() * 4;
+                backgroundSatellites.push({ x: canvas.width + 20, y, vx: -(0.3 + Math.random() * 0.3), w, h, life: 1200 });
+            }
+            for (let i = backgroundSatellites.length - 1; i >= 0; i--) {
+                const s = backgroundSatellites[i];
+                s.x += s.vx;
+                s.life--;
+                ctx.save();
+                ctx.globalAlpha = 0.25;
+                ctx.fillStyle = 'rgba(0,0,0,0.9)';
+                ctx.fillRect(s.x, s.y, s.w, s.h);
+                // small antenna
+                if (s.w > 8) ctx.fillRect(s.x + s.w*0.7, s.y - 2, 1, 3);
+                ctx.restore();
+                if (s.life <= 0 || s.x < -40) backgroundSatellites.splice(i, 1);
+            }
+            // Rare background comets (very faint, behind stars)
+            if (Math.random() < 0.00035) {
+                const y = 30 + Math.random() * (canvas.height * 0.7);
+                backgroundComets.push({
+                    x: canvas.width + 50,
+                    y,
+                    vx: -(1.2 + Math.random() * 0.6),
+                    vy: -0.15 + Math.random() * 0.3,
+                    life: 360,
+                    len: 80 + Math.random() * 100
+                });
+            }
+            for (let i = backgroundComets.length - 1; i >= 0; i--) {
+                const c = backgroundComets[i];
+                c.x += c.vx;
+                c.y += c.vy;
+                c.life--;
+                ctx.save();
+                const a = Math.max(0, Math.min(0.12, c.life / 360 * 0.12));
+                ctx.globalAlpha = a;
+                ctx.strokeStyle = 'rgba(220,240,255,0.9)';
+                ctx.lineWidth = 1.5;
+                ctx.shadowBlur = 12;
+                ctx.shadowColor = 'rgba(220,240,255,0.8)';
+                ctx.beginPath();
+                ctx.moveTo(c.x - c.vx * c.len, c.y - c.vy * c.len);
+                ctx.lineTo(c.x, c.y);
+                ctx.stroke();
+                // comet head
+                ctx.fillStyle = 'rgba(240,250,255,0.6)';
+                ctx.shadowBlur = 6;
+                ctx.beginPath();
+                ctx.arc(c.x, c.y, 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+                if (c.life <= 0 || c.x < -60 || c.y < -60 || c.y > canvas.height + 60) backgroundComets.splice(i, 1);
+            }
+            // Boss nebula overlay is drawn AFTER stars to appear on top (see bottom of this function)
             const speeds = [0.05, 0.15, 0.35];
             for (let i = 0; i < stars.length; i++) {
                 const star = stars[i];
@@ -1410,19 +1632,21 @@
                 star.x -= s; // drift left to imply ship motion
                 if (star.x < 0) star.x += canvas.width;
                 // Slightly brighter average with gentle variation
-                const alphaBase = star.brightness * (0.72 + 0.35 * Math.sin(frameCount * 0.01 + star.x * 0.02));
+                const brightnessMul = (gameState === 'start') ? 1.5 : 1.0; // +50% brightness on start screen
+                const alphaBase = star.brightness * brightnessMul * (0.72 + 0.35 * Math.sin(frameCount * 0.01 + star.x * 0.02));
                 ctx.globalAlpha = Math.min(1, Math.max(0.15, alphaBase));
-                ctx.fillStyle = '#fff';
-                ctx.fillRect(star.x, star.y, star.size, star.size);
+                ctx.fillStyle = star.color || '#fff';
+                const sizeMul = (gameState === 'start') ? 1.25 : 1.0; // +25% size on start screen
+                ctx.fillRect(star.x, star.y, star.size * sizeMul, star.size * sizeMul);
                 // Motion streaks during high-speed launch
                 if (starSpeedMul > 1.5) {
                     ctx.save();
                     const alpha = Math.min(0.6, (starSpeedMul - 1.5) * 0.15);
                     ctx.globalAlpha = Math.max(0, alpha) * Math.min(1, star.brightness + 0.2);
-                    ctx.strokeStyle = '#fff';
+                    ctx.strokeStyle = star.color || '#fff';
                     ctx.lineWidth = Math.max(1, star.size * Math.min(3, 0.5 * starSpeedMul));
                     // Triple the streak length and raise cap accordingly
-                    const len = Math.min(144, (s * 6 + star.size * 2) * 6);
+                    const len = Math.min(144, (s * 9 + star.size * 3) * 9);
                     ctx.beginPath();
                     ctx.moveTo(star.x + len, star.y);
                     ctx.lineTo(star.x, star.y);
@@ -1433,7 +1657,7 @@
             ctx.globalAlpha = 1;
             
             // Occasionally spawn a shooting star
-            if (Math.random() < 0.003) {
+            if (Math.random() < ((gameState === 'start') ? 0.003 * 1.5 : 0.003)) {
                 const y = Math.random() * canvas.height * 0.6;
                 shootingStars.push({ x: canvas.width + 10, y, vx: -(3 + Math.random() * 2), vy: 0.8 + Math.random() * 0.6, life: 45 });
             }
@@ -1456,6 +1680,103 @@
                 ctx.restore();
                 if (s.life <= 0 || s.x < -20 || s.y > canvas.height + 20) shootingStars.splice(i, 1);
             }
+            // Fast rare shooting stars: longer, faster, and traverse more screen
+            if (Math.random() < ((gameState === 'start') ? 0.0020 * 1.5 : 0.0020)) {
+                const y = Math.random() * canvas.height; // anywhere on screen
+                fastShootingStars.push({ x: canvas.width + 20, y, vx: -(6 + Math.random() * 4), vy: 1.6 + Math.random() * 1.2, life: 90 });
+            }
+            for (let i = fastShootingStars.length - 1; i >= 0; i--) {
+                const s = fastShootingStars[i];
+                s.x += s.vx;
+                s.y += s.vy;
+                s.life--;
+                ctx.save();
+                // Slightly brighter with longer streak
+                ctx.globalAlpha = Math.max(0, s.life / 90);
+                ctx.strokeStyle = '#fff';
+                ctx.shadowBlur = 14;
+                ctx.shadowColor = '#fff';
+                ctx.lineWidth = 2.5;
+                ctx.beginPath();
+                ctx.moveTo(s.x - s.vx * 12, s.y - s.vy * 12); // 4x original trail length
+                ctx.lineTo(s.x, s.y);
+                ctx.stroke();
+                ctx.restore();
+                if (s.life <= 0 || s.x < -40 || s.y > canvas.height + 40 || s.y < -40) fastShootingStars.splice(i, 1);
+            }
+            // Boss-centered live nebula overlay (ON TOP of parallax stars)
+            if (bossActive && boss && gameState === 'playing') {
+                const bx = boss.x, by = boss.y;
+                const t = frameCount || 0;
+                const name = (boss && boss.constructor && boss.constructor.name) || '';
+                // Pick a subtle palette by boss type
+                let cA = 'rgba(0,200,255,'; let cB = 'rgba(0,120,255,';
+                if (name === 'ColossusBoss') { cA = 'rgba(255,60,60,'; cB = 'rgba(255,0,160,'; }
+                else if (name === 'DreadshipBoss') { cA = 'rgba(0,200,255,'; cB = 'rgba(0,120,255,'; }
+                else if (name === 'CrystalTitanBoss') { cA = 'rgba(120,255,255,'; cB = 'rgba(255,120,255,'; }
+                else if (name === 'AlienCarrierBoss') { cA = 'rgba(120,255,120,'; cB = 'rgba(60,180,100,'; }
+                else if (name === 'AlienMothershipBoss') { cA = 'rgba(255,100,120,'; cB = 'rgba(255,0,140,'; }
+                // Size and rotation
+                const base = Math.min(canvas.width, canvas.height);
+                const rx = Math.max(140, base * 0.28);
+                const ry = rx * (0.5 + 0.15 * Math.sin(t * 0.01));
+                const ang = (t * 0.004) % (Math.PI * 2);
+                function ellipseGlowLive(x, y, rx, ry, angle, colorA, colorB, alphaCenter, alphaEdge) {
+                    ctx.save();
+                    ctx.translate(x, y);
+                    ctx.rotate(angle);
+                    ctx.scale(1, ry / rx);
+                    const r = rx;
+                    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+                    grad.addColorStop(0, colorA + alphaCenter + ')');
+                    grad.addColorStop(0.7, colorB + (alphaCenter * 0.6).toFixed(3) + ')');
+                    grad.addColorStop(1, colorB + alphaEdge + ')');
+                    ctx.fillStyle = grad;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, r, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.restore();
+                }
+                // Draw with additive blending to enhance visibility
+                ctx.save();
+                ctx.globalCompositeOperation = 'lighter';
+                // Two layered passes for depth (slightly higher alpha)
+                ellipseGlowLive(bx, by, rx, ry, ang, cA, cB, 0.10, 0.0);
+                ellipseGlowLive(bx + 12, by - 10, rx * 0.8, ry * 0.85, -ang * 0.8, cB, cA, 0.07, 0.0);
+                ctx.restore();
+            }
+
+            // Inner-edge cyan glow inside the playfield (subtle)
+            (function(){
+                const edge = 24; // thickness in px
+                ctx.save();
+                ctx.globalCompositeOperation = 'lighter';
+                // Top edge
+                let grad = ctx.createLinearGradient(0, 0, 0, edge);
+                grad.addColorStop(0, 'rgba(0,255,255,0.12)');
+                grad.addColorStop(1, 'rgba(0,255,255,0)');
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, canvas.width, edge);
+                // Bottom edge
+                grad = ctx.createLinearGradient(0, canvas.height, 0, canvas.height - edge);
+                grad.addColorStop(0, 'rgba(0,255,255,0.12)');
+                grad.addColorStop(1, 'rgba(0,255,255,0)');
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, canvas.height - edge, canvas.width, edge);
+                // Left edge
+                grad = ctx.createLinearGradient(0, 0, edge, 0);
+                grad.addColorStop(0, 'rgba(0,255,255,0.12)');
+                grad.addColorStop(1, 'rgba(0,255,255,0)');
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, edge, canvas.height);
+                // Right edge
+                grad = ctx.createLinearGradient(canvas.width, 0, canvas.width - edge, 0);
+                grad.addColorStop(0, 'rgba(0,255,255,0.12)');
+                grad.addColorStop(1, 'rgba(0,255,255,0)');
+                ctx.fillStyle = grad;
+                ctx.fillRect(canvas.width - edge, 0, edge, canvas.height);
+                ctx.restore();
+            })();
         }
         
         // Apply gravity from wells to any object with vx/vy (wrapper to utils.js)
@@ -1500,11 +1821,19 @@
             });
         }
 
+        // Compute per-level points multiplier (tunable). 1.0 at level 1, +10%/level, capped at 2.0x.
+        function getLevelMultiplier(currentLevel) {
+            const mul = 1 + 0.10 * (Math.max(1, currentLevel) - 1);
+            return Math.min(2.0, Math.max(1.0, mul));
+        }
+
         // Award points with combo logic (delegates to utils.js)
-        function awardPoints(basePoints, x, y) {
+        // If fixed=true, skip applying the level multiplier (for boss defeats only).
+        function awardPoints(basePoints, x, y, fixed = false) {
             const beforeMilestones = scoreMilestones.length;
+            const scaledPoints = fixed ? basePoints : Math.round(basePoints * getLevelMultiplier(level));
             const updated = awardPointsUtil(
-                basePoints,
+                scaledPoints,
                 x,
                 y,
                 {
@@ -1702,20 +2031,54 @@
             
             ctx.restore();
             
-            // Draw shield (visuals scale with shieldRadiusMul)
+            // Draw shield (enhanced: brighter/hotter + pulsating energy waves)
             if (player.shielded > 0) {
+                ctx.save();
+                ctx.globalCompositeOperation = 'lighter';
+                const t = frameCount * 0.18;
+                const shieldBase = player.radius + 10 * shieldRadiusMul;
+                const inc = 6 * shieldRadiusMul;
+
+                // Core concentric rings with pulsating thickness and alpha (green palette)
                 for (let i = 0; i < 3; i++) {
-                    ctx.globalAlpha = 0.3 - i * 0.1;
-                    ctx.strokeStyle = '#0f0';
-                    ctx.shadowBlur = 10;
-                    ctx.shadowColor = '#0f0';
-                    ctx.lineWidth = 3 - i * 0.5;
+                    const p = (Math.sin(t + i * 0.9) * 0.5 + 0.5); // 0..1
+                    ctx.globalAlpha = 0.35 - i * 0.1 + p * 0.08;
+                    ctx.strokeStyle = i === 0 ? '#b4ffb4' : '#0f0';
+                    ctx.shadowBlur = 18 + p * 14;
+                    ctx.shadowColor = '#66ff66';
+                    ctx.lineWidth = 2.5 - i * 0.4 + p * 0.6;
                     ctx.beginPath();
-                    const shieldBase = player.radius + 10 * shieldRadiusMul;
-                    const inc = 5 * shieldRadiusMul;
-                    ctx.arc(player.x, player.y, shieldBase + i * inc, 0, Math.PI * 2);
+                    ctx.arc(player.x, player.y, shieldBase + i * inc + p * 1.5, 0, Math.PI * 2);
                     ctx.stroke();
                 }
+
+                // Inner hot glow
+                const gPulse = (Math.sin(t * 0.6) * 0.5 + 0.5);
+                ctx.globalAlpha = 0.12 + gPulse * 0.10;
+                ctx.fillStyle = '#c8ffc8';
+                ctx.shadowBlur = 24 + gPulse * 18;
+                ctx.shadowColor = '#66ff66';
+                ctx.beginPath();
+                ctx.arc(player.x, player.y, player.radius + 6, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Emanating energy waves (expand and fade)
+                for (let w = 0; w < 2; w++) {
+                    const period = 60; // frames
+                    const phase = ((frameCount + w * 20) % period) / period; // 0..1
+                    const waveR = shieldBase + 20 + phase * (60 * shieldRadiusMul);
+                    const fade = 1 - phase;
+                    ctx.globalAlpha = 0.18 * fade;
+                    ctx.strokeStyle = '#66ff66';
+                    ctx.shadowBlur = 12 * fade;
+                    ctx.shadowColor = '#66ff66';
+                    ctx.lineWidth = 2 * fade + 0.5;
+                    ctx.beginPath();
+                    ctx.arc(player.x, player.y, waveR, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+
+                ctx.restore();
             }
             
             ctx.shadowBlur = 0;
@@ -1968,8 +2331,8 @@
                         attempts++;
                     } while (attempts < 100 && !isSafeLocation(safeX, safeY));
                     
-                    // Create warp tunnel effect
-                    warpTunnels.push(new WarpTunnel(player.x, player.y, safeX, safeY, 45));
+                    // Create warp tunnel effect (0.5s)
+                    warpTunnels.push(new WarpTunnel(player.x, player.y, safeX, safeY, 30));
                     
                     // Create teleport departure effect
                     for (let i = 0; i < 30; i++) {
@@ -2231,7 +2594,13 @@
             }
         }
         function asteroidDeps() {
-            return { spawnParticle, awardPoints, createExplosion, onEliteExplosionDamage: handleEliteAsteroidExplosion, canPushPowerup, pushPowerup };
+            // For asteroid kills only, apply level-specific reductions before normal level scaling.
+            const awardAsteroidPoints = (basePoints, x, y) => {
+                // Reduce asteroid points by 30% on Level 6; 50% on Levels 9 and 11
+                const adjusted = (level === 6) ? basePoints * 0.7 : ((level === 9 || level === 11) ? basePoints * 0.5 : basePoints);
+                return awardPoints(adjusted, x, y);
+            };
+            return { spawnParticle, awardPoints: awardAsteroidPoints, createExplosion, onEliteExplosionDamage: handleEliteAsteroidExplosion, canPushPowerup, pushPowerup };
         }
         
         function isSafeLocation(x, y) {
@@ -2263,6 +2632,11 @@
 
         // Convenience for continuous normal asteroid flow
         function spawnOffscreenNormalAsteroid() {
+            // Level 9: 35% chance to spawn an armored asteroid instead; not limited by normal cap
+            if (level === 9 && Math.random() < 0.35) {
+                spawnAsteroidOffscreen(4, true, false);
+                return;
+            }
             // Enforce global cap for normal (non-armored, non-elite) asteroids
             if (countNormalAsteroids() >= NORMAL_ASTEROID_CAP) return;
             spawnAsteroidOffscreen(3, false, false);
@@ -2285,7 +2659,21 @@
             if (!ast) return;
             const fullyDestroyed = Array.isArray(fragments) && fragments.length === 0;
             if (fullyDestroyed && !ast.armored && !ast.elite && ast.size === 1) {
-                spawnOffscreenNormalAsteroid();
+                if (level === 7) {
+                    // Maintain a small baseline of normal asteroids during Level 7
+                    if (countNormalAsteroids() < 2) {
+                        spawnOffscreenNormalAsteroid();
+                    } else {
+                        // Otherwise, 50% chance to spawn an elite replacement
+                        if (Math.random() < 0.5) {
+                            spawnAsteroidOffscreen(3, false, true);
+                        } else {
+                            spawnOffscreenNormalAsteroid();
+                        }
+                    }
+                } else {
+                    spawnOffscreenNormalAsteroid();
+                }
             }
         }
         // Spawn-safety specifically for the stranded ship: avoid asteroids, mines, gravity wells,
@@ -2396,8 +2784,7 @@
                             bullets.splice(bulletIndex, 1);
                             d.dead = true;
                             createExplosion(d.x, d.y, 40, '#6ff');
-                            // Suppress drone kill points during boss fights
-                            if (!bossActive) awardPoints(20, d.x, d.y);
+                            // No points are awarded for killing drones
                             break;
                         }
                     }
@@ -2625,8 +3012,8 @@
                 }
             }
             
-            // Stranded ship - asteroid collisions (level 2 and level 6 objective)
-            if ((level === 2 || level === 6) && strandedShip && strandedShip.active) {
+            // Stranded ship - asteroid collisions (levels 2, 6, and 11 objective)
+            if ((level === 2 || level === 6 || level === 11) && strandedShip && strandedShip.active) {
                 asteroids.forEach((asteroid, index) => {
                     const dx = strandedShip.x - asteroid.x;
                     const dy = strandedShip.y - asteroid.y;
@@ -2721,6 +3108,9 @@
             powerups = [];
             stars = [];
             shootingStars = [];
+            fastShootingStars = [];
+            backgroundComets = [];
+            backgroundSatellites = [];
             mines = [];
             enemyBullets.length = 0;
             drones = [];
@@ -2736,6 +3126,7 @@
             level9Spawned = false;
             level10Spawned = false;
             level11Spawned = false;
+            level12Spawned = false;
             strandedShip = null;
             boss = null;
             bossActive = false;
@@ -2799,6 +3190,7 @@
         function startGame() {
             const start = document.getElementById('startScreen');
             if (start) {
+                stopTipRotation();
                 // Fade out instead of instant hide
                 start.classList.add('fade-out');
                 start.style.pointerEvents = 'none';
@@ -2808,6 +3200,9 @@
                     start.style.pointerEvents = '';
                 }, 800);
             }
+            // Ensure attract mode is stopped when starting the game
+            if (attract && attract.isActive) attract.stop();
+            clearMenuSelection();
             setHUDVisible(false);
             // Begin launch sequence; gameplay starts after ~1s ramp
             gameState = 'launch';
@@ -2841,7 +3236,17 @@
                 if (go) go.classList.add('hidden');
                 if (start) start.classList.remove('hidden');
                 setHUDVisible(false);
+                // Ensure POWER-UP HUD is fully hidden/cleared on start screen
+                const pu = document.getElementById('powerup');
+                if (pu) { pu.classList.add('hidden'); pu.textContent = ''; }
                 gameState = 'start';
+                // Rebuild background for start screen visuals (brighter/bigger stars/nebula)
+                initBackgroundForLevel(level);
+                initStars();
+                initStartMenuSelection();
+                startTipRotation();
+                // Entering start: start Attract Mode immediately
+                if (attract && !attract.isActive) attract.start();
             }, 2000);
         }
         
@@ -2855,12 +3260,16 @@
             initGame();
         }
 
-        // Start directly at a specified level (2-11) from the start screen
+        // Start directly at a specified level (2-12) from the start screen
         function startAtLevel(n) {
             // Clamp to valid range
-            n = Math.max(2, Math.min(11, n|0));
+            n = Math.max(2, Math.min(12, n|0));
             const start = document.getElementById('startScreen');
             if (start) start.classList.add('hidden');
+            stopTipRotation();
+            // Ensure attract mode is stopped when jumping into a level
+            if (attract && attract.isActive) attract.stop();
+            clearMenuSelection();
             setHUDVisible(true);
             gameState = 'playing';
             paused = false;
@@ -2898,9 +3307,9 @@
                 scoreEl.style.textShadow = '';
             }
             const hiHud = document.getElementById('hi');
-            if (hiHud) hiHud.textContent = `Hi-Score: ${hiScore}`;
+            if (hiHud) hiHud.textContent = `HIGH: ${hiScore}`;
             const comboHud = document.getElementById('combo');
-            if (comboHud) comboHud.textContent = `Combo: ${maxComboBonusTotal}`;
+            if (comboHud) comboHud.textContent = `COMBO: ${maxComboBonusTotal}`;
             document.getElementById('lives').textContent = `LIVES: ${lives}`;
             const levelEl = document.getElementById('level');
             levelEl.textContent = `LEVEL: ${level}`;
@@ -2913,7 +3322,7 @@
                 levelEl.style.textShadow = '';
             }
             const strandedEl = document.getElementById('stranded');
-            if ((level === 2 || level === 6) && strandedShip && strandedShip.active) {
+            if ((level === 2 || level === 6 || level === 11) && strandedShip && strandedShip.active) {
                 strandedEl.classList.remove('hidden');
                 strandedEl.textContent = `STRANDED SHIP: ${strandedShip.health}/${strandedShip.maxHealth}`;
             } else {
@@ -2924,6 +3333,8 @@
             if (levelMessageTimer > 0) {
                 objectiveEl.classList.remove('hidden');
                 objectiveEl.textContent = levelMessageText.toUpperCase();
+                // Ensure the message fits on one centered line
+                fitObjectiveSingleLine();
             } else {
                 objectiveEl.classList.add('hidden');
             }
@@ -2944,7 +3355,7 @@
                     }
                     parts.push(label);
                 }
-                const useHint = player.currentPowerup ? ' (PRESS ENTER TO USE)' : '';
+                const useHint = player.currentPowerup ? ' ' : '';
                 powerupEl.textContent = `POWER-UP: ${parts.join(' • ')}${useHint}`;
                 const colors = {
                     bomb: '#ff0',
@@ -3008,45 +3419,148 @@
                     for (let sy = 0; sy < h; sy += 2) ctx.fillRect(0, sy, w, 1);
                     ctx.restore();
                 } else {
-                    // Chromatic wobble + blinking SYSTEMS ONLINE
+                    // CRT/VHS phase: initial 1s blink then ~2s interference effects before reveal
+                    const BOOT_FLASH = 250;
+                    const BOOT_SWEEP = 450; // 150..600
+                    const BOOT_BLINK = 1000; // keep original 1s blink
+                    const BOOT_INTERF = 2000; // additional interference duration (+2s total)
+
+                    const tLocal = t - (BOOT_FLASH + BOOT_SWEEP); // time since 600ms
+                    const cx = w * 0.5, cy = h * 0.5;
+                    const txt = 'SYSTEMS ONLINE';
+
                     ctx.save();
-                    // Subtle scanlines
+                    // Base scanlines for CRT look
                     ctx.globalAlpha = 0.06;
                     ctx.fillStyle = '#fff';
                     for (let sy = 0; sy < h; sy += 2) ctx.fillRect(0, sy, w, 1);
                     ctx.globalAlpha = 1;
-                    //const wob = Math.sin(t * 0.02) * 1.5;
-                    const cx = w * 0.5, cy = h * 0.5;
-                    const txt = 'SYSTEMS ONLINE';
+
+                    // Text styling baseline
                     ctx.font = 'bold 36px monospace';
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'middle';
-                    // RGB split layers
-                    ctx.shadowColor = '#0f0';
-                    ctx.shadowBlur = 18;
-                    ctx.fillStyle = 'rgba(255,255,255,1)';
-                    ctx.fillText(txt, cx  + 1.5, cy - 0.5);
-                    ctx.fillStyle = 'rgba(0,255,0,0.85)';
-                    ctx.fillText(txt, cx , cy);
-                    ctx.fillStyle = 'rgba(0,255,0,0.7)';
-                    ctx.fillText(txt, cx - 1.5, cy + 0.5);
-                    ctx.shadowBlur = 0;
-                    // Blink main text for ~1.5s after wobble starts
-                    const blinkElapsed = t - 600;
-                    const blinkOn = Math.floor(blinkElapsed / 250) % 2 === 0; // ~4Hz
-                    if (blinkElapsed < 1500) {
+
+                    const blinkOn = Math.floor(tLocal / 250) % 2 === 0; // blink throughout
+                    if (tLocal < BOOT_BLINK) {
+                        // Original blink (~1s)
                         if (blinkOn) {
+                            ctx.shadowColor = '#0f0';
+                            ctx.shadowBlur = 18;
                             ctx.fillStyle = '#0f0';
                             ctx.fillText(txt, cx, cy);
-                            
+                            ctx.shadowBlur = 0;
                         }
+                    } else if (tLocal < BOOT_BLINK + BOOT_INTERF) {
+                        // Interference window (~2s): chroma fringing, vertical jitter (no horizontal wobble), noise, tracking band, tearing
+                        const p = (tLocal - BOOT_BLINK) / BOOT_INTERF;
+
+                        // Vertical jitter only (no shear/rotation)
+                        const jitterY = (Math.random() - 0.5) * 3; // slightly stronger
+                        ctx.translate(0, jitterY);
+
+                        // Chromatic fringing for the text (stronger separation)
+                        if (blinkOn) {
+                            const off = 2 + Math.sin(t * 0.04) * 2.5;
+                            ctx.shadowBlur = 0;
+                            ctx.fillStyle = '#f00'; ctx.fillText(txt, cx - off, cy);
+                            ctx.fillStyle = '#0f0'; ctx.fillText(txt, cx + off, cy);
+                            ctx.fillStyle = '#00f'; ctx.fillText(txt, cx, cy + off);
+                            // Main green glow on top
+                            ctx.shadowColor = '#0f0';
+                            ctx.shadowBlur = 14;
+                            ctx.fillStyle = '#0f0';
+                            ctx.fillText(txt, cx, cy);
+                            ctx.shadowBlur = 0;
+                        }
+
+                        // (Tracking band removed per request)
+
+                        // Static noise speckles (more dense)
+                        ctx.globalAlpha = 0.10;
+                        ctx.fillStyle = '#fff';
+                        for (let i = 0; i < 600; i++) {
+                            const nx = (Math.random() * w) | 0;
+                            const ny = (Math.random() * h) | 0;
+                            ctx.fillRect(nx, ny, 1, 1);
+                        }
+                        ctx.globalAlpha = 1;
+
+                        // Horizontal tearing (more bands and varied heights)
+                        for (let i = 0; i < 10; i++) {
+                            const ty = Math.random() * h;
+                            const th = 4 + Math.random() * 12;
+                            const tx = (Math.random() * 2 - 1) * 18; // ±18px
+                            try {
+                                ctx.drawImage(canvas, 0, ty, w, th, tx, ty, w, th);
+                            } catch (e) { /* drawImage self-copy safe in most browsers */ }
+                        }
+
+                        // Corner vignette for curved CRT feel
+                        const grd = ctx.createRadialGradient(cx, cy, Math.min(w, h) * 0.45, cx, cy, Math.max(w, h) * 0.8);
+                        grd.addColorStop(0.0, 'rgba(0,0,0,0)');
+                        grd.addColorStop(1.0, 'rgba(0,0,0,0.28)');
+                        ctx.fillStyle = grd;
+                        ctx.fillRect(0, 0, w, h);
+
+                        // Vertical-only barrel squeeze (3-band remap; compress top/bottom)
+                        try {
+                            const off = document.createElement('canvas');
+                            off.width = w; off.height = h;
+                            const ox = off.getContext('2d');
+                            ox.drawImage(canvas, 0, 0);
+                            ctx.clearRect(0, 0, w, h);
+                            const topSrcH = Math.floor(h * 0.25);
+                            const midSrcH = Math.floor(h * 0.50);
+                            const botSrcH = h - topSrcH - midSrcH;
+                            const squeeze = 0.85; // compress edges
+                            const topDestH = Math.floor(topSrcH * squeeze);
+                            const botDestH = Math.floor(botSrcH * squeeze);
+                            const midDestH = h - topDestH - botDestH;
+                            // Top
+                            ctx.drawImage(off, 0, 0, w, topSrcH, 0, 0, w, topDestH);
+                            // Mid (expanded to fill)
+                            ctx.drawImage(off, 0, topSrcH, w, midSrcH, 0, topDestH, w, midDestH);
+                            // Bottom
+                            ctx.drawImage(off, 0, topSrcH + midSrcH, w, botSrcH, 0, topDestH + midDestH, w, botDestH);
+                        } catch (e) { /* ignore */ }
                     } else {
-                        
-                        // Reveal start menu and exit boot
-                        const start = document.getElementById('startScreen');
-                        if (start) start.classList.remove('hidden');
-                        setHUDVisible(false);
-                        gameState = 'start';
+                        // Fade to black over 1s, then reveal start and fade from black (run once)
+                        const fadeLayer = document.getElementById('screenFade');
+                        if (fadeLayer && !fadeLayer.dataset.bootFinish) {
+                            fadeLayer.dataset.bootFinish = '1';
+                            fadeLayer.classList.remove('hidden');
+                            fadeLayer.style.opacity = '0';
+                            fadeLayer.style.transition = 'opacity 1s ease';
+                            // force reflow
+                            void fadeLayer.offsetWidth;
+                            // fade to black
+                            fadeLayer.style.opacity = '1';
+                            setTimeout(() => {
+                                // now reveal start
+                                const start = document.getElementById('startScreen');
+                                if (start) start.classList.remove('hidden');
+                                setHUDVisible(false);
+                                const pu = document.getElementById('powerup');
+                                if (pu) { pu.classList.add('hidden'); pu.textContent = ''; }
+                                gameState = 'start';
+                                initBackgroundForLevel(level);
+                                initStars();
+                                initStartMenuSelection();
+                                startTipRotation();
+                                if (attract && !attract.isActive) attract.start();
+                                // fade from black over 2.5s
+                                fadeLayer.style.transition = 'opacity 2.5s ease';
+                                // force reflow
+                                void fadeLayer.offsetWidth;
+                                fadeLayer.style.opacity = '0';
+                                setTimeout(() => {
+                                    fadeLayer.classList.add('hidden');
+                                    fadeLayer.style.transition = '';
+                                    delete fadeLayer.dataset.bootFinish;
+                                }, 2500);
+                            }, 1000);
+                        }
                     }
                     ctx.restore();
                 }
@@ -3065,14 +3579,20 @@
                 const now = performance.now();
                 if (!launchStartTime) launchStartTime = now;
                 const t = now - launchStartTime;
-                const peakMul = 8.0; // target peak multiplier
-                const baseMul = 0.2; // initial multiplier
+                const peakMul = 32.0; // target peak multiplier
+                const baseMul = 1.2; // initial multiplier
                 if (t <= LAUNCH_DURATION) {
                     const p = Math.min(1, Math.max(0, t / LAUNCH_DURATION));
                     const ease = 1 - Math.pow(1 - p, 3); // easeOutCubic
                     starSpeedMul = baseMul + ease * (peakMul - baseMul);
                     shakeFrames = 1;
                     shakeIntensity = Math.max(shakeIntensity, 0.5 + ease * 3.5);
+                    // Ramp in launch blur and feedback trail
+                    if (glRenderer && glRenderer.setLaunchBlur) {
+                        const blurAmt = 0.05 + ease * 0.45; // 0.05 -> 0.50 (reduced)
+                        glRenderer.setLaunchBlur(blurAmt);
+                        if (glRenderer.setFeedbackAlpha) glRenderer.setFeedbackAlpha(0.82 + ease * 0.06);
+                    }
                 } else if (t <= LAUNCH_DURATION + LAUNCH_EASEBACK) {
                     const pb = Math.min(1, Math.max(0, (t - LAUNCH_DURATION) / LAUNCH_EASEBACK));
                     const eb = 1 - Math.pow(1 - pb, 3); // easeOutCubic for decel
@@ -3080,8 +3600,17 @@
                     shakeFrames = 1;
                     const decay = 1 - eb; // 1 -> 0
                     shakeIntensity = Math.max(shakeIntensity, 0.5 + decay * 3.5);
+                    if (glRenderer && glRenderer.setLaunchBlur) {
+                        const blurAmt = Math.max(0, 0.50 * (1.0 - eb)); // decay 0.50 -> 0
+                        glRenderer.setLaunchBlur(blurAmt);
+                        if (glRenderer.setFeedbackAlpha) glRenderer.setFeedbackAlpha(0.82 + blurAmt * 0.06);
+                    }
                 } else {
                     starSpeedMul = 1;
+                    if (glRenderer && glRenderer.setLaunchBlur) {
+                        glRenderer.setLaunchBlur(0);
+                        if (glRenderer.resetFeedbackAlpha) glRenderer.resetFeedbackAlpha();
+                    }
                 }
             }
             // Global screen-shake transform
@@ -3119,6 +3648,9 @@
                     gameState = 'playing';
                     paused = false;
                     starSpeedMul = 1; // return starfield to normal speed
+                    // Reset launch blur state
+                    if (glRenderer && glRenderer.setLaunchBlur) glRenderer.setLaunchBlur(0);
+                    if (glRenderer && glRenderer.resetFeedbackAlpha) glRenderer.resetFeedbackAlpha();
                     // restore shake transform and proceed next frame
                     ctx.restore();
                     requestAnimationFrame(gameLoop);
@@ -3132,6 +3664,19 @@
                 // Keep background effects alive during warp
                 frameCount++;
                 ctx.restore(); // restore screen-shake transform
+                requestAnimationFrame(gameLoop);
+                return;
+            }
+
+            // Start screen: run attract mode immediately and render it
+            if (gameState === 'start') {
+                if (!attract.isActive) {
+                    attract.start();
+                }
+                try { attract.update(); } catch (e) {}
+                try { attract.draw(ctx); } catch (e) {}
+                // Keep UI static on start; proceed to next frame
+                ctx.restore();
                 requestAnimationFrame(gameLoop);
                 return;
             }
@@ -3155,12 +3700,13 @@
                     (score < 7000) ? 7 :
                     (score < 8000) ? 8 :
                     (score < 9000) ? 9 :
-                    (score < 10000) ? 10 : 11;
+                    (score < 10000) ? 10 :
+                    (score < 11000) ? 11 : 12;
                 // Start upgrade selection when eligible after boss freeze or on natural threshold
                 if (!bossActive && bossDefeatFreeze === 0 && !upgradePending && !deferUpgradeUntilStrandedGone) {
                     if (bossUpgradeQueued) {
                         // Trigger upgrade for queued next level after boss defeat (once)
-                        startUpgradeSelection(Math.min(11, level + 1));
+                        startUpgradeSelection(Math.min(12, level + 1));
                         bossUpgradeQueued = false;
                     } else if (pendingLevel === 0 && targetLevel > level) {
                         // Normal progression by score threshold
@@ -3237,6 +3783,8 @@
                             createExplosion,
                             awardPoints,
                             lineCircleCollision,
+                            showHUDMessage,
+                            applyShockwave,
                             setShake: (frames, intensity) => {
                                 shakeFrames = Math.max(shakeFrames, frames);
                                 shakeIntensity = Math.max(shakeIntensity, intensity);
@@ -3341,6 +3889,21 @@
                         } while (((Math.hypot(bx - ax, by - ay) < Math.min(canvas.width, canvas.height) * 0.5) || !isSafeLocation(bx, by)) && tries < 200);
                         wormholes.push(new Wormhole(ax, ay));
                         wormholes.push(new Wormhole(bx, by));
+                        // Immediately seed asteroids for Level 7 with a 50% chance to be elite
+                        {
+                            const initialSpawns = 4;
+                            for (let i = 0; i < initialSpawns; i++) {
+                                if (Math.random() < 0.5) {
+                                    spawnAsteroidOffscreen(3, false, true);
+                                } else {
+                                    spawnOffscreenNormalAsteroid();
+                                }
+                            }
+                        }
+                        // Ensure a small baseline of normal asteroids at Level 7 start
+                        while (countNormalAsteroids() < 2) {
+                            spawnOffscreenNormalAsteroid();
+                        }
                         level7Spawned = true;
                         levelMessageTimer = 240; // ~4 seconds at 60fps
                         levelMessageText = 'Wormholes detected! Elite asteroids inbound!';
@@ -3348,7 +3911,26 @@
                         // Transition to Level 8 boss: remove all wormholes from Level 7
                         if (wormholes && wormholes.length) wormholes.length = 0;
                         // Spawn Level 8 Boss: Alien Dreadship
-                        boss = new DreadshipBoss();
+                        boss = new DreadshipBoss({
+                            canvas,
+                            ctx,
+                            player,
+                            enemyBullets,
+                            drones,
+                            powerups,
+                            EnemyBullet,
+                            Drone,
+                            Powerup,
+                            createExplosion,
+                            awardPoints,
+                            lineCircleCollision,
+                            setShake: (frames, intensity) => {
+                                shakeFrames = Math.max(shakeFrames, frames);
+                                shakeIntensity = Math.max(shakeIntensity, intensity);
+                            },
+                            onPlayerHit: () => { takePlayerHit(); },
+                            getFrameCount: () => frameCount,
+                        });
                         bossActive = true;
                         level8Spawned = true;
                         // Clear field for the boss battle (preserve references)
@@ -3389,7 +3971,12 @@
                                 ay = Math.random() * canvas.height;
                                 tries++;
                             } while (!isSafeLocation(ax, ay) && tries < 100);
-                            asteroids.push(new Asteroid(ax, ay, 2));
+                            // Level 9: 35% chance each spawn is an armored asteroid
+                            if (Math.random() < 0.35) {
+                                asteroids.push(new Asteroid(ax, ay, 4, true));
+                            } else {
+                                asteroids.push(new Asteroid(ax, ay, 2));
+                            }
                         }
                     } else if (level === 10 && !level10Spawned && !bossActive) {
                         // Level 10 Boss: Crystal Titan (moved from previous level 9)
@@ -3432,8 +4019,67 @@
                             if (glRenderer.spawnGlow) glRenderer.spawnGlow(boss.x, boss.y, 0xaaccff, 60, 0.9);
                         }
                     } else if (level === 11 && !level11Spawned && !bossActive) {
-                        // Level 11 Boss: Alien Carrier
-                        boss = new AlienCarrierBoss({
+                        // Level 11: Stranded ship + two wormhole pairs, continuous normal asteroid flow
+                        // Clear field of hazards/enemies and reset stranded ship
+                        if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                        if (mines && mines.length) mines.length = 0;
+                        enemyBullets.length = 0;
+                        if (drones && drones.length) drones.length = 0;
+                        if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                        // Keep existing asteroids; we'll add flow below
+                        // Spawn stranded ship safely inside the playfield
+                        {
+                            let sx, sy, tries = 0;
+                            do {
+                                sx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                                sy = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                                tries++;
+                            } while (!isSafeForStranded(sx, sy) && tries < 50);
+                            strandedShip = new StrandedShip(sx, sy);
+                        }
+                        // Spawn two wormhole pairs far apart and safe
+                        wormholes = [];
+                        const spawnWormholePair = () => {
+                            let ax, ay, bx, by, tries = 0;
+                            // First of pair
+                            do {
+                                ax = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                                ay = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                                tries++;
+                            } while (!isSafeLocation(ax, ay) && tries < 100);
+                            // Second of pair far from first and safe
+                            tries = 0;
+                            do {
+                                bx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                                by = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                                tries++;
+                            } while (((Math.hypot(bx - ax, by - ay) < Math.min(canvas.width, canvas.height) * 0.5) || !isSafeLocation(bx, by)) && tries < 200);
+                            wormholes.push(new Wormhole(ax, ay));
+                            wormholes.push(new Wormhole(bx, by));
+                        };
+                        spawnWormholePair();
+                        spawnWormholePair();
+                        // Ensure a baseline of normal asteroids at Level 11 start
+                        while (countNormalAsteroids() < 4) {
+                            spawnOffscreenNormalAsteroid();
+                        }
+                        level11Spawned = true;
+                        levelMessageTimer = 240;
+                        levelMessageText = 'Protect the stranded ship! Wormholes detected!';
+                    } else if (level === 12 && !level12Spawned && !bossActive) {
+                        // Level 12 Boss: Alien Mothership
+                        // Clear all previous hazards/enemies before spawn (preserve references)
+                        if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                        if (wormholes && wormholes.length) wormholes.length = 0;
+                        if (mines && mines.length) mines.length = 0;
+                        asteroids.length = 0;
+                        bullets.length = 0;
+                        enemyBullets.length = 0;
+                        if (drones && drones.length) drones.length = 0;
+                        if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                        strandedShip = null;
+
+                        boss = new AlienMothershipBoss({
                             canvas,
                             ctx,
                             player,
@@ -3442,35 +4088,34 @@
                             asteroids,
                             powerups,
                             drones,
+                            mines,
                             EnemyBullet,
                             Asteroid,
                             Powerup,
                             Drone,
+                            Mine,
                             createExplosion,
                             awardPoints,
                             lineCircleCollision,
+                            showHUDMessage,
+                            applyShockwave,
                             setShake: (frames, intensity) => {
                                 shakeFrames = Math.max(shakeFrames, frames);
                                 shakeIntensity = Math.max(shakeIntensity, intensity);
                             },
+                            onPlayerHit: () => { takePlayerHit(); },
                             getFrameCount: () => frameCount,
                         });
                         bossActive = true;
-                        level11Spawned = true;
-                        // Clear field for the boss battle (preserve references)
-                        asteroids.length = 0;
-                        bullets.length = 0;
-                        enemyBullets.length = 0;
-                        if (drones && drones.length) drones.length = 0;
-                        if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                        level12Spawned = true;
                         levelMessageTimer = 240;
-                        levelMessageText = "DISABLE THE CARRIER'S DRONE BAYS THEN DESTROY THE CORE!";
+                        levelMessageText = 'DESTROY THE MOTHERSHIP!';
                         // Boss spawn shockwave pushback + brief invulnerability
                         applyShockwave(boss.x, boss.y, MINE_SHOCKWAVE_RADIUS, MINE_PUSH_STRENGTH);
                         player.invulnerable = Math.max(player.invulnerable, 90);
                         if (glRenderer) {
                             if (glRenderer.pulseExplosion) glRenderer.pulseExplosion(240, boss.x, boss.y);
-                            if (glRenderer.spawnGlow) glRenderer.spawnGlow(boss.x, boss.y, 0x88ff88, 60, 0.9);
+                            if (glRenderer.spawnGlow) glRenderer.spawnGlow(boss.x, boss.y, 0xff8899, 60, 0.9);
                         }
                     }
                 }
@@ -3488,19 +4133,46 @@
                 if (gravityWells && gravityWells.length > 0) {
                     gravityWells.forEach(gw => { gw.update(); gw.draw(ctx); });
                 }
-                // Update and draw wormholes (Level 7)
+                // Update and draw wormholes (support multiple pairs)
                 if (wormholes && wormholes.length > 0) {
                     wormholes.forEach(w => { w.update(); w.draw(ctx); });
-                    if (wormholes.length >= 2) {
-                        const A = wormholes[0], B = wormholes[1];
+                    // Draw connectors for each pair [0-1], [2-3], ...
+                    for (let i = 0; i + 1 < wormholes.length; i += 2) {
+                        const A = wormholes[i], B = wormholes[i + 1];
+                        if (!A || !B) continue;
                         ctx.save();
-                        ctx.globalAlpha = 0.25;
-                        ctx.strokeStyle = '#ffffff';
-                        ctx.lineWidth = 1.5;
+                        const prevOp = ctx.globalCompositeOperation;
+                        const p = 0.5 + 0.5 * Math.sin(((A.pulse || 0) + (B.pulse || 0)) * 0.5);
+                        const grad = ctx.createLinearGradient(A.x, A.y, B.x, B.y);
+                        grad.addColorStop(0, 'rgba(100, 220, 255, 0.9)');
+                        grad.addColorStop(0.5, 'rgba(240, 120, 255, 0.9)');
+                        grad.addColorStop(1, 'rgba(100, 220, 255, 0.9)');
+
+                        ctx.globalCompositeOperation = 'lighter';
+                        // Outer glow stroke
+                        ctx.globalAlpha = 0.28 + 0.35 * p;
+                        ctx.strokeStyle = grad;
+                        ctx.shadowColor = 'rgba(180, 240, 255, 1)';
+                        ctx.shadowBlur = 24 + 14 * p;
+                        ctx.lineWidth = 3.0 + 1.6 * p;
                         ctx.beginPath();
                         ctx.moveTo(A.x, A.y);
                         ctx.lineTo(B.x, B.y);
                         ctx.stroke();
+
+                        // Core bright stroke
+                        ctx.globalAlpha = 0.65 + 0.25 * p;
+                        ctx.strokeStyle = '#eaffff';
+                        ctx.shadowColor = '#eaffff';
+                        ctx.shadowBlur = 12 + 8 * p;
+                        ctx.lineWidth = 1.8 + 0.8 * p;
+                        ctx.beginPath();
+                        ctx.moveTo(A.x, A.y);
+                        ctx.lineTo(B.x, B.y);
+                        ctx.stroke();
+
+                        ctx.globalCompositeOperation = prevOp;
+                        ctx.shadowBlur = 0;
                         ctx.restore();
                     }
                 }
@@ -3533,7 +4205,10 @@
                 // Update and draw asteroids
                 if (asteroids && asteroids.length > 0) {
                     asteroids.forEach(a => {
-                        a.update(level, gravityWells, canvas, applyGravityTo);
+                        a.update(level, gravityWells, canvas, applyGravityTo, (sx, sy) => {
+                            // Spawn a homing drone at the asteroid's position
+                            drones.push(new Drone(sx, sy));
+                        });
                         a.draw(ctx);
                     });
                 }
@@ -3548,7 +4223,7 @@
                         boss = null;
                         bossDefeatFreeze = 120;
                         bossUpgradeQueued = true;
-                        pendingLevel = Math.min(11, level + 1);
+                        pendingLevel = Math.min(12, level + 1);
                         levelMessageTimer = 240;
                         levelMessageText = 'Boss defeated!';
                     }
@@ -3556,7 +4231,7 @@
 
                 // Update and draw drones (Level 8 boss)
                 if (drones && drones.length > 0) {
-                    drones = drones.filter(d => {
+                    filterInPlace(drones, d => {
                         d.update(player, canvas);
                         d.draw(ctx);
                         return !d.dead;
@@ -3630,40 +4305,47 @@
                 updatePlayer();
                 drawPlayer();
                 
-                // Wormhole teleports for player, asteroids, bullets
+                // Wormhole teleports for player, asteroids, bullets (support multiple pairs)
                 if (wormholes.length >= 2) {
-                    const A = wormholes[0], B = wormholes[1];
+                    const pairs = [];
+                    for (let i = 0; i + 1 < wormholes.length; i += 2) {
+                        pairs.push([wormholes[i], wormholes[i + 1]]);
+                    }
                     const tryWarp = (obj, rad) => {
-                        const test = (from, to) => {
-                            const dx = obj.x - from.x, dy = obj.y - from.y;
-                            if (Math.hypot(dx, dy) < from.radius + rad) {
-                                // direction from velocity or random
-                                let vx = obj.vx || 0, vy = obj.vy || 0;
-                                if (vx === 0 && vy === 0) {
-                                    const ang = Math.random() * Math.PI * 2;
-                                    vx = Math.cos(ang); vy = Math.sin(ang);
+                        for (let k = 0; k < pairs.length; k++) {
+                            const A = pairs[k][0], B = pairs[k][1];
+                            const test = (from, to) => {
+                                const dx = obj.x - from.x, dy = obj.y - from.y;
+                                if (Math.hypot(dx, dy) < from.radius + rad) {
+                                    // direction from velocity or random
+                                    let vx = obj.vx || 0, vy = obj.vy || 0;
+                                    if (vx === 0 && vy === 0) {
+                                        const ang = Math.random() * Math.PI * 2;
+                                        vx = Math.cos(ang); vy = Math.sin(ang);
+                                    }
+                                    const sp = Math.hypot(vx, vy) || 1;
+                                    const nx = vx / sp, ny = vy / sp;
+                                    obj.x = to.x + nx * (to.radius + rad + 2);
+                                    obj.y = to.y + ny * (to.radius + rad + 2);
+                                    // arrival shimmer
+                                    for (let i = 0; i < 16; i++) {
+                                        const ang = (Math.PI * 2 * i) / 16;
+                                        particles.push(new Particle(
+                                            obj.x,
+                                            obj.y,
+                                            Math.cos(ang) * 2,
+                                            Math.sin(ang) * 2,
+                                            '#8ff',
+                                            24
+                                        ));
+                                    }
+                                    return true;
                                 }
-                                const sp = Math.hypot(vx, vy) || 1;
-                                const nx = vx / sp, ny = vy / sp;
-                                obj.x = to.x + nx * (to.radius + rad + 2);
-                                obj.y = to.y + ny * (to.radius + rad + 2);
-                                // arrival shimmer
-                                for (let i = 0; i < 16; i++) {
-                                    const ang = (Math.PI * 2 * i) / 16;
-                                    particles.push(new Particle(
-                                        obj.x,
-                                        obj.y,
-                                        Math.cos(ang) * 2,
-                                        Math.sin(ang) * 2,
-                                        '#8ff',
-                                        24
-                                    ));
-                                }
-                                return true;
-                            }
-                            return false;
-                        };
-                        return test(A, B) || test(B, A);
+                                return false;
+                            };
+                            if (test(A, B) || test(B, A)) return true;
+                        }
+                        return false;
                     };
                     // Player warp using existing teleporting cooldown
                     if (player.teleporting <= 0) {
@@ -3753,6 +4435,19 @@
                 // Draw floating bonus texts on top of scene
                 drawFloatingTexts();
                 
+                // Level 7: periodically trickle in normal asteroids to keep a small presence
+                if (!bossActive && level === 7 && frameCount % 240 === 0) {
+                    if (countNormalAsteroids() < 2) {
+                        spawnOffscreenNormalAsteroid();
+                    }
+                }
+                // Level 11: continuously trickle in normal asteroids to maintain flow
+                if (!bossActive && level === 11 && frameCount % 180 === 0) {
+                    if (countNormalAsteroids() < 4) {
+                        spawnOffscreenNormalAsteroid();
+                    }
+                }
+                
                 // Spawn new asteroids off-screen if all destroyed (disabled during boss)
                 if (!bossActive && asteroids.length === 0) {
                     const numAsteroids = Math.min(4 + Math.floor(score / 1000), 8);
@@ -3760,7 +4455,10 @@
                         if (level === 6) {
                             spawnOffscreenNormalAsteroid();
                         } else if (level === 7) {
-                            if (Math.random() < 0.507) {
+                            // Level 7: 50% chance to spawn an elite; maintain a small baseline of normals
+                            if (countNormalAsteroids() < 2) {
+                                spawnOffscreenNormalAsteroid();
+                            } else if (Math.random() < 0.5) {
                                 spawnAsteroidOffscreen(3, false, true);
                             } else {
                                 spawnOffscreenNormalAsteroid();
@@ -3855,14 +4553,83 @@
             paused = !paused;
             const po = document.getElementById('pauseOverlay');
             if (po) {
-                if (paused) po.classList.remove('hidden');
-                else po.classList.add('hidden');
+                if (paused) {
+                    po.classList.remove('hidden');
+                    updateWebGLToggleButton();
+                    // Initialize keyboard selection for pause overlay
+                    initPauseMenuSelection();
+                }
+                else {
+                    po.classList.add('hidden');
+                    clearMenuSelection();
+                }
             }
+        }
+
+        // WebGL toggle controls (Pause menu)
+        function updateWebGLToggleButton() {
+            const btn = document.getElementById('webglToggleBtn');
+            if (btn) btn.textContent = 'Visual Filters: ' + (webglEnabled ? 'ON' : 'OFF');
+        }
+        function enableWebGL() {
+            if (glRenderer) { webglEnabled = true; updateWebGLToggleButton(); return; }
+            webglEnabled = true;
+            initWebGLIfEnabled();
+            // If PIXI not loaded or init failed, revert flag
+            if (!glRenderer) webglEnabled = false;
+            updateWebGLToggleButton();
+        }
+        function disableWebGL() {
+            webglEnabled = false;
+            if (glRenderer && glRenderer.destroy) glRenderer.destroy();
+            glRenderer = null;
+            window.glRenderer = null;
+            updateWebGLToggleButton();
+        }
+        window.toggleWebGLSetting = function() {
+            if (webglEnabled) disableWebGL(); else enableWebGL();
         }
         
         // Event listeners
         window.addEventListener('keydown', (e) => {
             keys[e.key.toLowerCase()] = true;
+            const key = e.key;
+            const keyLower = (e.key || '').toLowerCase();
+            const inMenu = (gameState === 'start' || gameState === 'upgrade' || paused);
+            // Any input activity resets inactivity timer and cancels attract on start
+            lastInputTime = performance.now();
+            // Do not auto-stop Attract Mode on generic input; only stop when starting game/level
+
+            // Menu navigation (Start / Upgrade screens)
+            if (inMenu) {
+                // Ensure selection initialized for current screen
+                if (gameState === 'start' && (!menuSelection.active || menuSelection.active !== 'start')) initStartMenuSelection();
+                if (gameState === 'upgrade' && (!menuSelection.active || menuSelection.active !== 'upgrade')) initUpgradeMenuSelection();
+                if (paused && (!menuSelection.active || menuSelection.active !== 'pause')) initPauseMenuSelection();
+
+                // Left/Right/Up/Down or A/D/W/S to move selection
+                const isLeft = (key === 'ArrowLeft' || keyLower === 'a');
+                const isRight = (key === 'ArrowRight' || keyLower === 'd');
+                const isUp = (key === 'ArrowUp' || keyLower === 'w');
+                const isDown = (key === 'ArrowDown' || keyLower === 's');
+                const isSpace = (e.code === 'Space' || key === ' ' || key === 'Spacebar');
+
+                if (!e.repeat && (isLeft || isUp)) {
+                    moveMenuSelection(-1);
+                    e.preventDefault();
+                    return;
+                }
+                if (!e.repeat && (isRight || isDown)) {
+                    moveMenuSelection(1);
+                    e.preventDefault();
+                    return;
+                }
+                if (!e.repeat && isSpace) {
+                    activateMenuSelection();
+                    e.preventDefault();
+                    return;
+                }
+            }
             // Pause toggle
             if (e.key.toLowerCase() === 'p' && gameState === 'playing' && !e.repeat) {
                 togglePause();
@@ -3876,6 +4643,17 @@
         window.addEventListener('keyup', (e) => {
             keys[e.key.toLowerCase()] = false;
         });
+
+        // Mouse/touch/wheel also cancel/ reset inactivity for attract mode on start screen
+        const cancelAttractFromPointer = () => {
+            lastInputTime = performance.now();
+            // Keep Attract Mode running; only stop on Start/Level selection
+        };
+        window.addEventListener('mousedown', cancelAttractFromPointer);
+        window.addEventListener('mousemove', cancelAttractFromPointer);
+        window.addEventListener('wheel', cancelAttractFromPointer, { passive: true });
+        window.addEventListener('touchstart', cancelAttractFromPointer, { passive: true });
+        window.addEventListener('touchmove', cancelAttractFromPointer, { passive: true });
         
         // Initialize game
         initBackgroundForLevel(level);
@@ -3886,6 +4664,7 @@
             if (start) start.classList.add('hidden');
             setHUDVisible(false);
             bootStartTime = performance.now();
+            lastInputTime = performance.now(); // reset inactivity baseline on boot
         }
         // Rebuild background on window resize (keeps deep-sky layer crisp)
         window.addEventListener('resize', () => {

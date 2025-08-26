@@ -14,6 +14,8 @@ export class StrandedShip {
     this.angle = Math.random() * Math.PI * 2; // random facing
     this.evacuating = false;
     this.invulnerable = false; // used while evacuating
+    // Spawn invulnerability (~2s at 60fps)
+    this.spawnInvulnTimer = 120;
     this.speed = 5;
     // Highlight timer for initial spawn (frames ~3s at 60fps)
     this.highlightTimer = 180;
@@ -27,7 +29,7 @@ export class StrandedShip {
   }
 
   hit() {
-    if (this.invulnerable) return;
+    if (this.invulnerable || (this.spawnInvulnTimer && this.spawnInvulnTimer > 0)) return;
     this.health = Math.max(0, this.health - 1);
     this.damageFlash = 15;
   }
@@ -36,6 +38,7 @@ export class StrandedShip {
   update(canvas, frameCount, spawnParticle) {
     if (this.damageFlash > 0) this.damageFlash--;
     if (this.highlightTimer > 0) this.highlightTimer--;
+    if (this.spawnInvulnTimer > 0) this.spawnInvulnTimer--;
     // If evacuating (end of level 2), fly straight out and despawn safely
     if (this.evacuating) {
       this.x += Math.cos(this.angle) * this.speed;
@@ -129,6 +132,21 @@ export class StrandedShip {
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(0, 0, this.radius * 1.4 * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    // Temporary protective shield right after spawn
+    if (this.spawnInvulnTimer > 0) {
+      const t = this.spawnInvulnTimer / 120;
+      const pulse = 1 + Math.sin(frameCount * 0.25) * 0.05;
+      ctx.globalAlpha = 0.5 + 0.3 * t; // fades out over the 2s window
+      ctx.strokeStyle = '#0ff';
+      ctx.shadowColor = '#0ff';
+      ctx.shadowBlur = 12;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius * 1.5 * pulse, 0, Math.PI * 2);
       ctx.stroke();
       ctx.shadowBlur = 0;
     }

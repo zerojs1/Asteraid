@@ -31,7 +31,7 @@ export class CrystalTitanBoss {
     for (let i = 0; i < count; i++) {
       this.facets.push({
         angle: (Math.PI * 2 * i) / count,
-        hits: 3,
+        hits: 5,
         radius: 38,
         pulse: Math.random() * Math.PI * 2,
         hitFlash: 0,
@@ -41,12 +41,24 @@ export class CrystalTitanBoss {
     // Attacks
     this.ringCooldown = 140; // radial shard bursts
     this.snipeCooldown = 90; // aimed prism shots
+
+    // Shard charge/laser cycle
+    // Every 6s: 2s charge (glowing lines between shards + particles), then 1s beam from a random shard
+    this.chargeActive = false;
+    this.chargeStart = 0;
+    this.chargeTarget = { x: 0, y: 0 };
+    this.chosenFacetRef = null;
+    this.chargeParticles = [];
+    this.beam = null; // { sx, sy, ex, ey, startFrame, duration }
+    this.beamParticles = [];
+    this.nextChargeFrame = this.spawnTime + 360; // start first cycle 6s after spawn
   }
 
   isDefeated() { return this.defeated; }
 
   update() {
-    const { player, enemyBullets, EnemyBullet, setShake } = this.deps;
+    const { player, enemyBullets, EnemyBullet, setShake, getFrameCount, lineCircleCollision, onPlayerHit } = this.deps;
+    const frame = getFrameCount();
     // Spin facets
     for (let f of this.facets) {
       f.angle += this.rotateSpeed;
@@ -57,7 +69,7 @@ export class CrystalTitanBoss {
     // Radial shard bursts
     if (this.ringCooldown > 0) this.ringCooldown--;
     if (this.ringCooldown === 0) {
-      const n = 10;
+      const n = 5;
       for (let i = 0; i < n; i++) {
         const a = (Math.PI * 2 * i) / n + Math.random() * 0.1;
         enemyBullets.push(new EnemyBullet(this.x, this.y, a, 6));
@@ -77,6 +89,119 @@ export class CrystalTitanBoss {
       });
       this.snipeCooldown = 70;
     }
+
+    // Shard charge/laser ability cycle
+    if (!this.defeated && this.facets.length > 0) {
+      // Start charge every 6s
+      if (!this.chargeActive && !this.beam && frame >= this.nextChargeFrame) {
+        this.chargeActive = true;
+        this.chargeStart = frame;
+        this.chargeTarget = { x: player.x, y: player.y };
+        // Pick a random existing facet by reference (in case the array changes)
+        this.chosenFacetRef = this.facets[Math.floor(Math.random() * this.facets.length)] || null;
+      }
+
+      // During charge: (sparks removed for performance) keep only line connections
+      if (this.chargeActive) {
+        const positions = this.facetPositions();
+        // Connect in ring (i to i+1, and last to first)
+        for (let i = 0; i < positions.length; i++) {
+          const A = positions[i];
+          const B = positions[(i + 1) % positions.length];
+          // (particle sparks removed for performance)
+        }
+
+        // After 2s of charge, fire the beam
+        if (frame - this.chargeStart >= 120) {
+          // Resolve firing facet position (fallback to an existing facet if original was shattered)
+          let firePos = null;
+          if (this.chosenFacetRef) {
+            const idx = this.facets.findIndex(ff => ff === this.chosenFacetRef);
+            if (idx !== -1) {
+              const f = this.facets[idx];
+              firePos = {
+                x: this.x + Math.cos(f.angle) * this.orbitRadius,
+                y: this.y + Math.sin(f.angle) * this.orbitRadius,
+              };
+            }
+          }
+          if (!firePos && this.facets.length > 0) {
+            const f = this.facets[0];
+            firePos = {
+              x: this.x + Math.cos(f.angle) * this.orbitRadius,
+              y: this.y + Math.sin(f.angle) * this.orbitRadius,
+            };
+          }
+          if (firePos) {
+            // Make beam 40% longer by extending end point along the ray
+            const dx = this.chargeTarget.x - firePos.x;
+            const dy = this.chargeTarget.y - firePos.y;
+            const ex = firePos.x + dx * 1.4;
+            const ey = firePos.y + dy * 1.4;
+            this.beam = { sx: firePos.x, sy: firePos.y, ex, ey, startFrame: frame, duration: 60, fadeDuration: 60 };
+            setShake(10, 4);
+          }
+          this.chargeActive = false;
+          // Next cycle begins 6s after the previous charge start
+          this.nextChargeFrame = this.chargeStart + 360;
+        }
+      }
+
+      // Update charge particles
+      if (this.chargeParticles.length) {
+        for (let i = this.chargeParticles.length - 1; i >= 0; i--) {
+          const p = this.chargeParticles[i];
+          p.x += p.vx;
+          p.y += p.vy;
+          p.vx *= 0.98;
+          p.vy *= 0.98;
+          p.life--;
+          if (p.life <= 0) this.chargeParticles.splice(i, 1);
+        }
+      }
+
+      // Active beam + fade-out: collision and particles only while active; then 1s visual fade with no collision
+      if (this.beam) {
+        const age = frame - this.beam.startFrame;
+        if (age <= this.beam.duration) {
+          // Collision with player (continuous while beam is active)
+          if (lineCircleCollision && lineCircleCollision(this.beam.sx, this.beam.sy, this.beam.ex, this.beam.ey, player.x, player.y, player.radius)) {
+            onPlayerHit && onPlayerHit();
+          }
+          // Spawn beam particles (reduce by ~60%: avg 1.6 per frame)
+          {
+            // Always spawn 1, plus 0.6 chance to spawn 1 more
+            const spawnOne = () => {
+              const tpos = Math.random();
+              const x = this.beam.sx + (this.beam.ex - this.beam.sx) * tpos;
+              const y = this.beam.sy + (this.beam.ey - this.beam.sy) * tpos;
+              const ang = Math.random() * Math.PI * 2;
+              const sp = Math.random() * 1.6;
+              this.beamParticles.push({ x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 60, size: 2 + Math.random() * 2 });
+            };
+            spawnOne();
+            if (Math.random() < 0.6) spawnOne();
+          }
+        } else if (age <= this.beam.duration + (this.beam.fadeDuration || 60)) {
+          // Fade period: keep beam for visuals only
+        } else {
+          this.beam = null;
+        }
+      }
+
+      // Update beam particles
+      if (this.beamParticles.length) {
+        for (let i = this.beamParticles.length - 1; i >= 0; i--) {
+          const p = this.beamParticles[i];
+          p.x += p.vx;
+          p.y += p.vy;
+          p.vx *= 0.985;
+          p.vy *= 0.985;
+          p.life--;
+          if (p.life <= 0) this.beamParticles.splice(i, 1);
+        }
+      }
+    }
   }
 
   draw() {
@@ -94,23 +219,25 @@ export class CrystalTitanBoss {
       ctx.arc(this.x, this.y, this.coreRadius + i * 6, 0, Math.PI * 2);
       ctx.stroke();
     }
-    // Inner pulsing crystal nucleus
+    // Inner pulsing crystal nucleus: kite-shaped diamond, 100% bigger (double size)
     const innerPulse = 0.28 + 0.04 * Math.sin(getFrameCount() * 0.22);
-    const verts = 6;
-    const ir = this.coreRadius * innerPulse;
+    const base = this.coreRadius * innerPulse * 2; // double previous inner size
+    const h = base * 0.6; // horizontal half-width (narrower)
+    const v = base;       // vertical half-height (longer) -> kite shape
     ctx.fillStyle = 'rgba(255,255,255,0.95)';
     ctx.shadowBlur = 16;
     ctx.shadowColor = '#fff';
     ctx.beginPath();
-    for (let i = 0; i < verts; i++) {
-      const a = (i / verts) * Math.PI * 2 + getFrameCount() * 0.01;
-      const r = ir * (0.9 + Math.random() * 0.05);
-      const x = this.x + Math.cos(a) * r;
-      const y = this.y + Math.sin(a) * r;
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
+    ctx.moveTo(this.x, this.y - v); // top
+    ctx.lineTo(this.x + h, this.y); // right
+    ctx.lineTo(this.x, this.y + v); // bottom
+    ctx.lineTo(this.x - h, this.y); // left
     ctx.closePath();
     ctx.fill();
+    // subtle outline using coreColor for definition
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = coreColor;
+    ctx.stroke();
     ctx.shadowBlur = 0;
 
     // Draw facets
@@ -141,6 +268,71 @@ export class CrystalTitanBoss {
         ctx.arc(fx, fy, f.radius - 8 - h * 4, 0, Math.PI * 2);
         ctx.stroke();
       }
+    }
+    // Charging visuals: glowing hot white lines between shards (no sparks)
+    if (this.chargeActive && this.facets.length > 1) {
+      const positions = this.facetPositions();
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let pass = 0; pass < 2; pass++) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = pass === 0 ? 6 : 2;
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = pass === 0 ? 24 : 12;
+        ctx.globalAlpha = pass === 0 ? 0.35 : 0.85;
+        ctx.beginPath();
+        for (let i = 0; i < positions.length; i++) {
+          const A = positions[i];
+          const B = positions[(i + 1) % positions.length];
+          ctx.moveTo(A.x, A.y);
+          ctx.lineTo(B.x, B.y);
+        }
+        ctx.stroke();
+      }
+      // (charge-up particle sparks removed for performance)
+      ctx.restore();
+    }
+
+    // Beam visuals: thick white-hot core with glow (no chromatic aberration), plus trailing sparks
+    if (this.beam) {
+      const { sx, sy, ex, ey } = this.beam;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      // Beam stroke helper
+      const drawStroke = (dx, dy, color, width, alpha, blur) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = blur;
+        ctx.globalAlpha = alpha;
+        ctx.beginPath();
+        ctx.moveTo(sx + dx, sy + dy);
+        ctx.lineTo(ex + dx, ey + dy);
+        ctx.stroke();
+      };
+      // White-hot core (30% thinner) with 1s fade-out after active duration
+      const ageDraw = getFrameCount() - this.beam.startFrame;
+      let vis = 1;
+      if (ageDraw > this.beam.duration) {
+        const fd = this.beam.fadeDuration || 60;
+        vis = Math.max(0, 1 - (ageDraw - this.beam.duration) / fd);
+      }
+      const wOuter = 14 * 0.7; // 30% thinner
+      const wInner = 6 * 0.7;  // 30% thinner
+      drawStroke(0, 0, '#ffffff', wOuter, 0.95 * vis, 28 * vis);
+      drawStroke(0, 0, '#ffffff', wInner, 1.0 * vis, 12 * vis);
+
+      // Beam sparks
+      for (const p of this.beamParticles) {
+        ctx.globalAlpha = Math.max(0, Math.min(1, p.life / 60));
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
     }
     ctx.globalAlpha = 1;
     ctx.shadowBlur = 0;
@@ -271,7 +463,7 @@ export class CrystalTitanBoss {
     createExplosion(this.x, this.y, this.coreRadius * 3, '#f9f');
     setShake(24, 8);
     // Award fixed points for defeating the boss core
-    awardPoints(500, this.x, this.y);
+    awardPoints(500, this.x, this.y, true);
     // Drop 2-3 powerups capped at 4 active max
     const drops = 2 + Math.floor(Math.random() * 2);
     for (let i = 0; i < drops; i++) {

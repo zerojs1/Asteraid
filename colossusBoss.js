@@ -25,10 +25,10 @@ export class ColossusBoss {
     this.rotateSpeed = 0.012;
     this.plates = [];
     this.spawnTime = getFrameCount();
-    // Precompute asteroid-like core polygon (irregular) ~30% of core radius baseline
+    // Precompute asteroid-like core polygon (irregular) ~45% of core radius baseline
     this.coreVertices = [];
     const vcount = 10 + Math.floor(Math.random() * 3); // 10-12 vertices
-    const baseInner = this.coreRadius * 0.3;
+    const baseInner = this.coreRadius * 0.45;
     for (let i = 0; i < vcount; i++) {
       const ang = (i / vcount) * Math.PI * 2;
       const variance = 0.85 + Math.random() * 0.3;
@@ -282,6 +282,9 @@ export class ColossusBoss {
     for (let pos of this.platePositions()) {
       const dx = bullet.x - pos.x, dy = bullet.y - pos.y;
       if (Math.sqrt(dx * dx + dy * dy) < pos.radius + bullet.radius) {
+        // Spawn invulnerability for plates: ignore damage for first 1.5s
+        const { getFrameCount } = this.deps;
+        if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) return true; // consume bullet, no damage
         pos.ref.hits--;
         if (pos.ref.hits <= 0) {
           // Destroy plate
@@ -332,6 +335,9 @@ export class ColossusBoss {
     for (let pos of this.platePositions()) {
       const dx = particle.x - pos.x, dy = particle.y - pos.y;
       if (Math.sqrt(dx * dx + dy * dy) < pos.radius + 12) {
+        // Spawn invulnerability for plates: ignore damage for first 1.5s
+        const { getFrameCount } = this.deps;
+        if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) { hit = true; break; }
         pos.ref.hits--;
         if (pos.ref.hits <= 0) {
           createExplosion(pos.x, pos.y, 80, '#f00');
@@ -357,6 +363,9 @@ export class ColossusBoss {
     // Plates
     for (let pos of this.platePositions()) {
       if (lineCircleCollision(x1, y1, x2, y2, pos.x, pos.y, pos.radius)) {
+        // Spawn invulnerability for plates: ignore damage for first 1.5s
+        const { getFrameCount } = this.deps;
+        if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) { any = true; continue; }
         pos.ref.hits--;
         any = true;
         if (pos.ref.hits <= 0) {
@@ -402,7 +411,7 @@ export class ColossusBoss {
     createExplosion(this.x, this.y, this.coreRadius * 3, '#f0f');
     setShake(24, 8);
     // Award fixed points for defeating the core
-    awardPoints(500, this.x, this.y);
+    awardPoints(500, this.x, this.y, true);
     const drops = 2 + Math.floor(Math.random() * 2); // 2-3
     for (let i = 0; i < drops; i++) {
       const ang = Math.random() * Math.PI * 2;
