@@ -6,12 +6,14 @@ export function setPowerupDropMultiplier(mult) {
 }
 
 export class Asteroid {
-  constructor(x, y, size, armored = false, elite = false) {
+  constructor(x, y, size, armored = false, elite = false, colorOverride = null) {
     this.x = x;
     this.y = y;
     this.size = size;
     this.armored = armored;
     this.elite = elite;
+    // Optional color override for special variants (e.g., tether nodes)
+    this.color = colorOverride;
     this.hits = armored ? 3 : (elite ? 2 : 1);
     // Flag for boss-spawned minions (e.g., Colossus shard asteroids)
     this.bossMinion = false;
@@ -55,6 +57,22 @@ export class Asteroid {
       this.trailSmall = [];
       this.trailSmallTick = 0;
     }
+
+    // Build cached paths for outline and trails
+    this.path = this.buildPath(this.vertices, 1);
+    this.pathTrail = this.buildPath(this.vertices, 0.95);
+    // Cache armor ring paths (always build up to 3, use subset based on current hits)
+    if (this.armored) {
+      this.armorPaths = [];
+      for (let i = 0; i < 3; i++) {
+        const p = new Path2D();
+        p.arc(0, 0, this.radius - 10 - i * 5, 0, Math.PI * 2);
+        this.armorPaths.push(p);
+      }
+    }
+
+    // Pre-render the asteroid sprite (glow + outline); armor rings drawn dynamically
+    this.createSprite();
   }
 
   update(level, gravityWells, canvas, applyGravityTo, spawnDrone) {
@@ -116,7 +134,7 @@ export class Asteroid {
 
   draw(ctx) {
     ctx.save();
-    // Elite afterimage trail (draw behind)
+    // Elite afterimage trail (draw behind) using pre-rendered sprite
     if (this.elite && this.trail && this.trail.length) {
       for (let i = 0; i < this.trail.length; i++) {
         const t = this.trail[i];
@@ -124,87 +142,42 @@ export class Asteroid {
         if (alpha <= 0.02) continue;
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.shadowBlur = 10;
-        ctx.shadowColor = '#0f0';
-        ctx.strokeStyle = '#0f0';
-        // Thicker trail outline for elites
-        ctx.lineWidth = 2;
         ctx.translate(t.x, t.y);
         ctx.rotate(t.rot);
-        ctx.beginPath();
-        for (let j = 0; j < this.vertices.length; j++) {
-          const vertex = this.vertices[j];
-          const x = Math.cos(vertex.angle) * vertex.radius * 0.95;
-          const y = Math.sin(vertex.angle) * vertex.radius * 0.95;
-          if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.closePath();
-        ctx.stroke();
+        // Slightly smaller to mimic 0.95-scale trail
+        ctx.scale(0.95, 0.95);
+        ctx.drawImage(this.spriteCanvas, -this.spriteHalfW, -this.spriteHalfH, this.spriteW, this.spriteH);
         ctx.restore();
       }
     }
-    // Small asteroid subtle trail (draw behind)
+    // Small asteroid subtle trail (draw behind) using sprite
     if (this.size === 1 && !this.elite && this.trailSmall && this.trailSmall.length) {
-      const tColor = this.armored ? '#f00' : '#f0f';
       for (let i = 0; i < this.trailSmall.length; i++) {
         const t = this.trailSmall[i];
         const alpha = t.alpha;
         if (alpha <= 0.02) continue;
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.shadowBlur = 10;
-        ctx.shadowColor = tColor;
-        ctx.strokeStyle = tColor;
-        ctx.lineWidth = 2;
         ctx.translate(t.x, t.y);
         ctx.rotate(t.rot);
-        ctx.beginPath();
-        for (let j = 0; j < this.vertices.length; j++) {
-          const vertex = this.vertices[j];
-          const x = Math.cos(vertex.angle) * vertex.radius * 0.95;
-          const y = Math.sin(vertex.angle) * vertex.radius * 0.95;
-          if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.closePath();
-        ctx.stroke();
+        ctx.scale(0.95, 0.95);
+        ctx.drawImage(this.spriteCanvas, -this.spriteHalfW, -this.spriteHalfH, this.spriteW, this.spriteH);
         ctx.restore();
       }
     }
+
+    // Draw the main asteroid from sprite
     ctx.translate(this.x, this.y);
     ctx.rotate(this.rotation);
+    ctx.drawImage(this.spriteCanvas, -this.spriteHalfW, -this.spriteHalfH, this.spriteW, this.spriteH);
 
-    // Set color based on type
-    const color = this.elite ? '#0f0' : (this.armored ? '#f00' : '#f0f');
-
-    // Draw with multiple glow layers
-    for (let i = 3; i >= 0; i--) {
-      ctx.strokeStyle = color;
-      // Elite asteroids have thicker outlines than normal/armored
-      ctx.lineWidth = i === 0 ? (this.elite ? 3 : 2) : (this.elite ? 2 : 1);
-      ctx.globalAlpha = i === 0 ? 1 : 0.3;
-      ctx.shadowBlur = 20 - i * 5;
-      ctx.shadowColor = color;
-
-      ctx.beginPath();
-      for (let j = 0; j < this.vertices.length; j++) {
-        const vertex = this.vertices[j];
-        const x = Math.cos(vertex.angle) * vertex.radius;
-        const y = Math.sin(vertex.angle) * vertex.radius;
-        if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      }
-      ctx.closePath();
-      ctx.stroke();
-    }
-
-    // Draw armor plating for armored asteroids
-    if (this.armored) {
+    // Draw armor plating dynamically (reflect current hits)
+    if (this.armored && this.armorPaths) {
       ctx.globalAlpha = 0.5;
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 1;
-      for (let i = 0; i < this.hits; i++) {
-        ctx.beginPath();
-        ctx.arc(0, 0, this.radius - 10 - i * 5, 0, Math.PI * 2);
-        ctx.stroke();
+      for (let i = 0; i < Math.min(this.hits, this.armorPaths.length); i++) {
+        ctx.stroke(this.armorPaths[i]);
       }
     }
 
@@ -213,8 +186,95 @@ export class Asteroid {
     ctx.globalAlpha = 1;
   }
 
-  hit(deps) {
+  buildPath(vertices, scale) {
+    const p = new Path2D();
+    for (let j = 0; j < vertices.length; j++) {
+      const vertex = vertices[j];
+      const x = Math.cos(vertex.angle) * vertex.radius * scale;
+      const y = Math.sin(vertex.angle) * vertex.radius * scale;
+      if (j === 0) p.moveTo(x, y); else p.lineTo(x, y);
+    }
+    p.closePath();
+    return p;
+  }
+
+  createSprite() {
+    // Prepare a pre-rendered sprite with baked glow/outline (no armor rings)
+    const color = this.color || (this.elite ? '#0f0' : (this.armored ? '#f00' : '#f0f'));
+    const margin = 24; // accommodate shadow blur and stroke width
+    const viewW = this.radius * 2 + margin * 2;
+    const viewH = this.radius * 2 + margin * 2;
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+
+    this.spriteCanvas = (typeof document !== 'undefined' && document.createElement)
+      ? document.createElement('canvas')
+      : undefined;
+    if (!this.spriteCanvas) {
+      // Fallback: if no DOM (unlikely), skip sprite and use paths at draw (already cached)
+      this.spriteW = viewW; this.spriteH = viewH; this.spriteHalfW = viewW / 2; this.spriteHalfH = viewH / 2;
+      return;
+    }
+
+    this.spriteCanvas.width = Math.ceil(viewW * dpr);
+    this.spriteCanvas.height = Math.ceil(viewH * dpr);
+    this.spriteW = viewW;
+    this.spriteH = viewH;
+    this.spriteHalfW = viewW / 2;
+    this.spriteHalfH = viewH / 2;
+
+    const sctx = this.spriteCanvas.getContext('2d');
+    if (!sctx) return;
+    sctx.save();
+    sctx.scale(dpr, dpr);
+    sctx.translate(this.spriteHalfW, this.spriteHalfH);
+
+    for (let i = 3; i >= 0; i--) {
+      sctx.strokeStyle = color;
+      sctx.lineWidth = i === 0 ? (this.elite ? 3 : 2) : (this.elite ? 2 : 1);
+      sctx.globalAlpha = i === 0 ? 1 : 0.3;
+      sctx.shadowBlur = 20 - i * 5;
+      sctx.shadowColor = color;
+      sctx.stroke(this.path);
+    }
+
+    sctx.restore();
+    sctx.shadowBlur = 0;
+    sctx.globalAlpha = 1;
+  }
+
+  hit(deps, impactX, impactY) {
+    // Small impact feedback for elite/armored types
+    const { createExplosion } = deps || {};
+    const ix = (typeof impactX === 'number') ? impactX : this.x;
+    const iy = (typeof impactY === 'number') ? impactY : this.y;
+
     this.hits--;
+
+    // Elite: show a one-time small green pop on first damage taken
+    if (this.elite) {
+      if (!this._firstHitShown && createExplosion) {
+        // Fixed 16px radius using lightweight 'micro' profile
+        createExplosion(ix, iy, 3, '#0f0', 'micro');
+        this._firstHitShown = true;
+      }
+    }
+
+    // Armored: small red pop on each armor hit (while still alive)
+    if (this.armored && this.hits > 0) {
+      if (createExplosion) {
+        // Fixed 16px radius using lightweight 'micro' profile
+        createExplosion(ix, iy, 3, '#f00', 'micro');
+      }
+    }
+
+    // Normal (non-armored, non-elite): small pop on hit using asteroid's color
+    if (!this.armored && !this.elite) {
+      if (createExplosion) {
+        const color = this.color || '#f0f';
+        createExplosion(ix, iy, 3, color, 'micro');
+      }
+    }
+
     if (this.hits <= 0) {
       return this.destroy(deps);
     }
@@ -245,7 +305,7 @@ export class Asteroid {
       return [];
     }
 
-    // Spawn smaller asteroids
+    // Spawn smaller asteroids (configurable for armored split)
     const newAsteroids = [];
     if (this.size === 3) {
       // Large splits into 2 medium
@@ -254,11 +314,15 @@ export class Asteroid {
       // Medium splits into 2 small
       for (let i = 0; i < 2; i++) newAsteroids.push(new Asteroid(this.x, this.y, 1));
     } else if (this.size === 4 && this.armored) {
-      // Armored splits into 3 small armored
-      for (let i = 0; i < 3; i++) {
-        const smallArmored = new Asteroid(this.x, this.y, 1, true);
-        smallArmored.hits = 3;
-        newAsteroids.push(smallArmored);
+      // Armored split can be disabled by deps.allowArmoredSplit === false
+      const allowArmoredSplit = !(deps && deps.allowArmoredSplit === false);
+      if (allowArmoredSplit) {
+        // Armored splits into 3 small armored
+        for (let i = 0; i < 3; i++) {
+          const smallArmored = new Asteroid(this.x, this.y, 1, true);
+          smallArmored.hits = 3;
+          newAsteroids.push(smallArmored);
+        }
       }
     }
 

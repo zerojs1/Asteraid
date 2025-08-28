@@ -27,9 +27,7 @@
 - **Shield refraction**: While `state.shielded` is true in `update(state)`, the bulge lens centers on the player, sets `radius ≈ max(60, playerRadius * 3)`, and boosts lens strength for a refractive shield shimmer.
 
 - **Performance note**: The overlay continuously mirrors the base canvas each frame. If targeting low-end devices, toggle `ENABLE_WEBGL` off or reduce bloom/noise intensities via `setPostFX()`.
-# Asteraid — Neon Arcade Asteroids, Reimagined
 
-Fast, glowing, CRT‑styled arcade action. Pilot a nimble ship in a wraparound arena, shatter neon asteroids, and survive escalating hazards and bosses. Master precise thrust/rotation, time charged shots, chain kills for combo bonuses, and pop power‑ups to turn the tide.
 
 - **Core mechanics**: wraparound movement, thrust/rotate/shoot, charged shot, 8 power‑ups (Bomb, Shield, Teleport, Flak, Rainbow, Invisible, Laser, Clone), combo scoring, and juicy neon VFX.
 - **Level flow**:
@@ -171,9 +169,152 @@ Fast, glowing, CRT‑styled arcade action. Pilot a nimble ship in a wraparound a
 - **Level 10 entry**: Spawns the `CrystalTitanBoss`, clears asteroids, bullets, and enemy bullets (and empties `drones`/`cloneDrones` if present), sets the objective “SHATTER THE CRYSTAL TITAN'S FACETS THEN CORE!”, triggers a spawn shockwave pushback, and grants ~90 frames of player invulnerability. Boss phase gates progression until defeat.
 
 ### Performance
+
+#### Performance Optimization Guide (60 FPS on Steam Deck)
 - Circle-based collision checks.
 - Capped counts (bullets/power-ups/particles) to maintain 60 FPS target.
 - Frame-based timers for consistent pacing.
+
+- __Dynamic render scale (Canvas)__
+  - Add `RENDER_SCALE` in `constants.js` and draw the game at a slightly lower internal resolution (e.g., 0.85–0.95) while CSS-scales `#gameContainer` to fit. This preserves visuals with a large perf win on GPU-bound devices.
+  - Implementation: set `canvas.width/height = baseSize * RENDER_SCALE` in `ast.html` init and adjust transform of `#gameContainer` (already present) to scale up.
+
+- __WebGL overlay tuning (`glRenderer`, Pixi)__
+  - Lower Pixi resolution: initialize `PIXI.Application({ resolution: 1 })` instead of `devicePixelRatio`. Expose a `WEBGL_RESOLUTION` in `constants.js`.
+  - Half-res postFX: render overlay at half the canvas size to RTs, then upscale the `outputSprite` (big boost with minimal quality loss).
+  - Frame skipping for overlay: when `frameTime > 16.7ms`, run `glRenderer.update()` every other frame (keep game logic at 60 FPS).
+  - Filter trims: reduce `BLOOM_SCALE/BRIGHTNESS`, disable `NoiseFilter` when busy, keep `CRTFilter.curvature` modest, and only enable `BulgePinchFilter` while `state.shielded` is true.
+
+- __Collision cost: add a simple spatial grid__
+  - Create a uniform grid (cell ≈ 64 px) in `utils.js` and bucket `asteroids`, `powerups`, `mines`, `bullets`. Then only collide against the current and neighboring cells.
+  - Replace O(N×M) scans in hotpaths (e.g., player↔asteroids, bullets↔asteroids, asteroid↔asteroid for mines bounce) with local queries.
+
+- __Use squared distances in hot loops__
+  - Replace `Math.sqrt`/`Math.hypot` with squared compares: `dx*dx + dy*dy < r*r` in `lineCircleCollision`, entity `hit` checks, and boss node/plate checks (`alienMothershipBoss.js`, `colossusBoss.js`).
+
+- __Object pooling to reduce GC stutter__
+  - Pool `Particle`, `Bullet`, `EnemyBullet`, `Powerup`, and common explosion shards. Provide `acquire()`/`release()` utilities in each module or a shared pool in `utils.js`.
+  - Avoid repeated `array.filter` in tight loops; use swap-remove (write last element into removed slot and `pop()`).
+
+- __Batch Canvas2D state changes__
+  - Reduce `ctx.save()/restore()` and shadow changes. Group draws by style where possible (e.g., bullets with the same glow), or set glow once per batch.
+  - Pre-render glow sprites (offscreen canvas) for bullets/powerups/particles and `drawImage` them instead of large `shadowBlur` on every primitive.
+
+- __Particles: adaptive density__
+  - Cap and adapt: when `particles.length` exceeds a threshold, drop spawn rate slightly and shorten lifetimes. Expose `MAX_PARTICLES` in `constants.js` and degrade gracefully.
+  - Explosion presets: use a few precomputed angle/velocity sets instead of generating many randoms per explosion.
+
+- __HUD/DOM updates only on change__
+  - In `ast.html`, ensure HUD text (`#score`, `#hi`, `#combo`, `#lives`, `#level`, `#stranded`, `#powerup`) updates only when values change to avoid layout/reflow every frame.
+
+- __Starfield and background__
+  - You already pre-render background layers to `backgroundCanvas`. Do similar for star layers: prerender star sprites to offscreen bitmaps and translate/blit layers instead of drawing hundreds of arcs with glow each frame.
+  - Optionally reduce star counts or twinkle update rate while gameplay is busy.
+
+- __Boss helpers: cache per-frame positions__
+  - `colossusBoss.js` uses `platePositions()` and `alienMothershipBoss.js` uses `nodePositions()`. Cache results once per frame to avoid recomputation across bullet/particle/laser passes.
+
+- __Physics and interactions__
+  - Mines bounce: for mine↔asteroid and mine↔mine, early-out via grid pruning and squared distances before resolving elastic collisions.
+  - Gravity wells (L5): avoid applying gravity to far entities by culling with a quick radius check; consider scaling gravity cost down with a grid.
+
+- __Adaptive quality controller__
+  - Track a moving average of frame time. When > 16.7ms: lower `RENDER_SCALE` by small steps (min 0.8), thin particles, skip WebGL overlay frames, relax bloom/noise. Restore when performance recovers.
+
+- __Misc micro-optimizations__
+  - Reuse vectors/arrays to avoid allocations in inner loops.
+  - Prefer `for (let i=0; i<n; i++)` over `for..of` in hotpaths.
+  - Cache trigs when rotating many points at fixed rates (e.g., boss orbits): compute sin/cos once per frame and reuse.
+
+##### Suggested small code changes (low risk)
+- Convert collision checks to squared distance forms in bosses and `utils.js`.
+- Introduce a minimal `SpatialGrid` in `utils.js` and refactor key collide loops to use it.
+- Pool `Particle` and `Bullet` objects; replace array `filter` removals with swap-remove.
+
+###optimization plan
+-
+Phase 1 — Spatial Grid broad‑phase (CPU win)
+Goal: Cut pairwise distance checks using a uniform grid; exact behavior preserved.
+Flags:
+constants.js
+: ENABLE_SPATIAL_GRID = true
+Optional: GRID_CELL_SIZE = 64
+Files:
+utils.js
+: add SpatialGrid (build per frame), grid.insert(entity), grid.queryCircle(x, y, r).
+ast.html
+: build/populate grid each frame, then use in hot loops.
+Rollout steps:
+Implement grid + unit tests (console tests) in 
+utils.js
+.
+Apply only to bullets ↔ asteroids first. Validate same hit counts and points vs. pre-grid in a 60s scripted run.
+Apply to player ↔ asteroids, then mines’ bounce broad‑phase, then boss hit-tests.
+Checks:
+Sanity: collisions identical for fixed RNG seed; no missed hits at edges (test with cell boundaries).
+Perf: frame time reduction under dense fields.
+Rollback: Toggle ENABLE_SPATIAL_GRID = false.
+
+Phase 1 completed!
+
+Phase 2 — Pre‑rendered neon sprite cache (GPU win)
+Goal: Replace per-frame large shadowBlur with cached offscreen sprites; visuals match.
+Flags:
+constants.js
+: ENABLE_SPRITE_CACHE = true
+Files:
+effects.js or 
+utils.js
+: createSpriteCache() to build small atlases at boot:
+Bullet core, bullet streak, enemy bullet, common particle puffs, powerup ring(s) at 6–10 sizes.
+bullets.js
+, 
+enemyBullets.js
+, particle.js, powerups.js: when flag is on, use drawImage() from cache; otherwise current path.
+Rollout steps:
+Start with player bullets only: cache one core + one streak sprite; A/B compare single-frame screenshots.
+Extend to enemy bullets, then common particles (explosion puffs), then powerup glow rings.
+Batch draws by style where possible; minimize ctx.save/restore().
+Checks:
+Visual parity: screenshot probe on a dark background; ensure halo intensity/size matches.
+Perf: GPU time drops during heavy fire and explosions.
+Rollback: Disable ENABLE_SPRITE_CACHE.
+
+Phase 3 — Half‑resolution WebGL overlay + filter resolution control (GPU win)
+Goal: Render Pixi overlay at lower internal res with preserved look, then upscale.
+Flags:
+constants.js
+: reuse WEBGL_RESOLUTION (exists) and add OVERLAY_INTERNAL_SCALE = 0.5
+Files:
+ast.html
+ in initWebGLIfEnabled():
+Keep resolution: devicePixelRatio * WEBGL_RESOLUTION.
+Size render textures and set filterResolution = OVERLAY_INTERNAL_SCALE.
+Set outputSprite scale to match canvas; ensure filterArea correct.
+Ensure BulgePinch active only while state.shielded.
+Rollout steps:
+Apply 0.75 first; verify parity; then 0.5. Keep a console override, e.g., glRenderer.setPostFX({ filterResolution: … }).
+If fringe softness appears, raise only bloom’s internal res to 0.75; keep others at 0.5.
+Checks:
+Visual parity during launch blur, bloom flashes, shield lens, CRT scanlines.
+Perf: overlay GPU time reduction; maintain 60 FPS during bloom-heavy scenes.
+Fallbacks:
+If still GPU-bound, gate overlay updates to every other frame when avgFrameTime > 16.7ms (last resort, preserves logic at 60 Hz).
+Test & Verification
+Metrics harness:
+Add a simple console overlay: moving average frame time (last 120 frames), count of asteroids/bullets/particles. No code change now; we’ll add during implementation.
+Visual checks:
+SxS screenshots of: idle, heavy fire, explosions, shield, boss pulses; compare halos and scanline crispness.
+Acceptance:
+No gameplay differences (hits, points, timers, spawn rates).
+No visible quality regressions.
+Stable 60 FPS target on lower-end GPUs.
+Order of operations
+Spatial Grid (biggest CPU win, zero visual risk).
+Sprite Cache (big GPU win, exact look preserved).
+Half‑res Overlay (big GPU win; post‑FX tolerant to downsampling).
+
+
 
 ### Visual & Audio
 - Font: Google Fonts "Orbitron". No external audio by default.
@@ -354,6 +495,10 @@ After crippling the Alien Mothership, long-range scans trace a power signature b
   - On entry, clear field and clamp level progression (pause waves/cadence) until defeat.
   - Show boss objective: `DESTROY THE CARRIER'S DRONE BAYS, THEN CORE!`
   - On last pod destroyed, flash HUD: `CORE EXPOSED!` (reuse `showHUDMessage(...)`).
+- **Field hazards (Level 14 addition)**:
+  - Tether Pairs: pairs of medium asteroid nodes connected by a pulsing neon line that damages the player on contact. The line can be broken by player fire at the segment; on break the nodes slow, the tether disappears, and points are awarded, then the pair respawns after a cooldown.
+  - Constants: `TETHER_PAIR_COUNT`, `TETHER_NODE_RADIUS`, `TETHER_PULSE_SPEED`, `TETHER_LINE_BASE_WIDTH`, `TETHER_SPEED_AFTER_BREAK`, `TETHER_POINTS_ON_BREAK`, `TETHER_RESPAWN_FRAMES` (see `constants.js`).
+  - Collision: handled via `lineCircleCollision` against the player; break awards floating points at the line midpoint.
 - **Defeat & rewards**:
   - Large explosion + screen shake. Award fixed 500 points (no level multiplier). Drop 2–3 power-ups (respect 4-cap), 50% to drop an extra life. Clear enemy bullets/drones.
 - **Skills emphasized**: target prioritization (pods vs. drones), firing windows under pressure, Teleport for bailout, Shield to create safe pockets, Laser for pod lining.
@@ -391,6 +536,7 @@ After crippling the Alien Mothership, long-range scans trace a power signature b
 - Boss modules:
   - Level 14 can leverage/extend `alienCarrierBoss.js` (pods, drones, aimed spreads, `CORE EXPOSED` HUD hook).
   - Level 15 would be a new module (e.g., `singularityBoss.js`) reusing helpers from Colossus/Titan/Dreadship (plate/prism orbits, pulse rings, line-laser sweeps, mine/wormhole spawns).
+- Tether pairs spawn only during Level 14 and are cleared on entry to Levels 13 and 15 (and on boss defeat); maintain in-place array clears to preserve references.
 - Keep power‑up cap (4 on field) and reward patterns consistent with earlier bosses.
 
 ## Testing & Debugging Shortcuts

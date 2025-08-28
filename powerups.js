@@ -1,4 +1,38 @@
 // powerups.js: Powerup class extracted from ast.html
+import { ENABLE_SPRITE_CACHE } from './constants.js';
+
+// Cache glowing orb (without icon) per color at base radius (15)
+const orbCache = new Map(); // key: color -> {img, cx, cy, baseRadius}
+function getOrbSprite(color, baseRadius = 15) {
+  let spr = orbCache.get(color);
+  if (spr) return spr;
+  // Build offscreen canvas matching the procedural glow:
+  // four concentric ring strokes with shadow blur.
+  const maxShadow = 20; // matches 20 - i*5
+  const maxExtra = 3 * 2; // i * 2 with i=3 => 6
+  const margin = maxShadow + maxExtra + 6;
+  const size = baseRadius * 2 + margin * 2;
+  const cvs = document.createElement('canvas');
+  cvs.width = size;
+  cvs.height = size;
+  const ctx = cvs.getContext('2d');
+  const cx = size / 2, cy = size / 2;
+  for (let i = 3; i >= 0; i--) {
+    ctx.globalAlpha = i === 0 ? 1 : 0.3;
+    ctx.shadowBlur = 20 - i * 5;
+    ctx.shadowColor = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = i === 0 ? 2 : 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, baseRadius + i * 2, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+  spr = { img: cvs, cx, cy, baseRadius };
+  orbCache.set(color, spr);
+  return spr;
+}
 export class Powerup {
   constructor(x, y, type) {
     this.x = x;
@@ -29,28 +63,35 @@ export class Powerup {
 
   draw(ctx) {
     const pulseSize = Math.sin(this.pulse) * 5;
-
-    // Draw glowing orb
-    for (let i = 3; i >= 0; i--) {
-      ctx.globalAlpha = i === 0 ? 1 : 0.3;
-      ctx.shadowBlur = 20 - i * 5;
-      ctx.shadowColor = this.color;
-      ctx.strokeStyle = this.color;
-      ctx.lineWidth = i === 0 ? 2 : 1;
-
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, this.radius + pulseSize + i * 2, 0, Math.PI * 2);
-      ctx.stroke();
+    if (ENABLE_SPRITE_CACHE) {
+      const spr = getOrbSprite(this.color, this.radius);
+      const scale = (this.radius + pulseSize) / spr.baseRadius;
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.scale(scale, scale);
+      ctx.drawImage(spr.img, -spr.cx, -spr.cy);
+      ctx.restore();
+    } else {
+      // Procedural orb
+      for (let i = 3; i >= 0; i--) {
+        ctx.globalAlpha = i === 0 ? 1 : 0.3;
+        ctx.shadowBlur = 20 - i * 5;
+        ctx.shadowColor = this.color;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = i === 0 ? 2 : 1;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius + pulseSize + i * 2, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
 
-    // Draw icon
+    // Draw icon (procedural, to avoid scaling text)
     ctx.globalAlpha = 1;
     ctx.fillStyle = this.color;
     ctx.font = 'bold 16px Orbitron';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(this.icon, this.x, this.y);
-
     ctx.shadowBlur = 0;
   }
 }

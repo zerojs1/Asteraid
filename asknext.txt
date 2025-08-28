@@ -1,1 +1,15 @@
 
+
+level 12 boss alien mothership update: increase the amount of hits required to kill each shield battery by 33%.
+
+
+
+Level idea:
+Notification should be "Warning! Drone swarms!".
+Clear all previous asteroids and hazards at the start of the level.
+On this level spawn 7 elite asteroids, when one dies spawn another to replace it off screen, no other types of asteroids should spawn. 
+on this level reduce the amount of points gained by 60% for this level only.
+Spawn one gravitywell on this level.
+
+
+on level 15: make sure the drones and attack drones have a chance to drop power-ups. Also the shield batteries have a chance to drop power-ups too.

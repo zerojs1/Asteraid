@@ -37,6 +37,58 @@ export class Drone {
   }
 }
 
+// Hostile AttackDrone: like Drone but red, filled, and fires at the player every ~2s
+export class AttackDrone {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.vx = 0; this.vy = 0;
+    this.radius = 12;
+    this.dead = false;
+    this.maxSpeed = 1.2; // 35% slower than normal drones (~1.43)
+    this.turnRate = 0.06;
+    this.fireCooldown = 120; // frames between shots (~2s at 60fps)
+    this.explosionColor = '#f55';
+  }
+  update(player, canvas, enemyBullets, EnemyBullet) {
+    if (this.dead) return;
+    // Movement: identical to Drone
+    const angTo = Math.atan2(player.y - this.y, player.x - this.x);
+    const cur = Math.atan2(this.vy, this.vx);
+    let diff = Math.atan2(Math.sin(angTo - cur), Math.cos(angTo - cur));
+    diff = Math.max(-this.turnRate, Math.min(this.turnRate, diff));
+    const speed = Math.min(this.maxSpeed, Math.hypot(this.vx, this.vy) + 0.15);
+    const newAng = cur + diff;
+    this.vx = Math.cos(newAng) * speed;
+    this.vy = Math.sin(newAng) * speed;
+    this.x += this.vx; this.y += this.vy;
+    // Fire toward player periodically
+    if (this.fireCooldown > 0) this.fireCooldown--;
+    if (this.fireCooldown === 0 && enemyBullets && EnemyBullet) {
+      const ang = Math.atan2(player.y - this.y, player.x - this.x);
+      const eb = new EnemyBullet(this.x, this.y, ang, 5.2);
+      eb.color = '#f33';
+      enemyBullets.push(eb);
+      this.fireCooldown = 120;
+    }
+    // Offscreen cull
+    if (this.x < -40 || this.x > canvas.width + 40 || this.y < -40 || this.y > canvas.height + 40) this.dead = true;
+  }
+  draw(ctx) {
+    if (this.dead) return;
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    const ang = Math.atan2(this.vy, this.vx);
+    ctx.rotate(ang);
+    ctx.shadowBlur = 12; ctx.shadowColor = '#f33';
+    ctx.fillStyle = '#f33';
+    ctx.beginPath();
+    ctx.moveTo(14, 0); ctx.lineTo(-10, -8); ctx.lineTo(-10, 8); ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+}
+
 // Friendly clone drone that orbits the player and mirrors firing
 export class CloneDrone {
   constructor(x, y, offsetAngle = 0) {

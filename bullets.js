@@ -4,6 +4,61 @@
 // Back-compat: a boolean 'true' maps to level 1.
 // Methods: update(canvas, level, applyGravityTo), draw(ctx)
 
+import { ENABLE_SPRITE_CACHE } from './constants.js';
+
+// Lightweight sprite cache for bullet visuals
+// Keyed by: `${chargeLevel}|${radius.toFixed(2)}|${color}`
+const bulletSpriteCache = new Map();
+function getBulletSprite(chargeLevel, radius, color) {
+  const key = `${chargeLevel}|${radius.toFixed(2)}|${color}`;
+  const cached = bulletSpriteCache.get(key);
+  if (cached) return cached;
+
+  const len = (chargeLevel === 0 ? 14 : (chargeLevel === 1 ? 26 : 32));
+  const trailBlur = (chargeLevel === 0 ? 10 : (chargeLevel === 1 ? 18 : 22));
+  const lineWidth = (chargeLevel === 0 ? 2.5 : (chargeLevel === 1 ? 4 : 5));
+  const coreBlur = (chargeLevel === 0 ? 12 : (chargeLevel === 1 ? 22 : 26));
+
+  const margin = Math.max(trailBlur, coreBlur, Math.ceil(radius)) + 4;
+  const width = Math.ceil(len + radius * 2 + margin * 2);
+  const height = Math.ceil(Math.max(lineWidth, radius * 2) + margin * 2);
+  const cvs = document.createElement('canvas');
+  cvs.width = width;
+  cvs.height = height;
+  const ctx = cvs.getContext('2d');
+
+  const xStart = margin;
+  const yMid = height / 2;
+  const xEnd = xStart + len;
+
+  // Trail
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.shadowColor = color;
+  ctx.shadowBlur = trailBlur;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.beginPath();
+  ctx.moveTo(xStart, yMid);
+  ctx.lineTo(xEnd, yMid);
+  ctx.stroke();
+  ctx.restore();
+
+  // Core dot
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = coreBlur;
+  ctx.beginPath();
+  ctx.arc(xEnd, yMid, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  const sprite = { img: cvs, ax: xEnd, ay: yMid };
+  bulletSpriteCache.set(key, sprite);
+  return sprite;
+}
+
 let BULLET_RANGE_MUL = 1;
 let CHARGED_SIZE_MUL = 1;
 export function setBulletRangeMultiplier(m) {
@@ -51,7 +106,17 @@ export class Bullet {
   }
 
   draw(ctx) {
-    // Neon streak trail
+    if (ENABLE_SPRITE_CACHE) {
+      const sprite = getBulletSprite(this.chargeLevel, this.radius, this.color);
+      const angle = Math.atan2(this.vy, this.vx);
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(angle);
+      ctx.drawImage(sprite.img, -sprite.ax, -sprite.ay);
+      ctx.restore();
+      return;
+    }
+    // Fallback: draw procedurally
     const sp = Math.hypot(this.vx, this.vy) || 1;
     const len = this.chargeLevel === 0 ? 14 : (this.chargeLevel === 1 ? 26 : 32);
     const tx = this.x - (this.vx / sp) * len;

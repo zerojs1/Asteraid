@@ -359,6 +359,9 @@ export class CrystalTitanBoss {
         // Decrement facet armor but REFLECT the bullet instead of consuming
         pos.ref.hits--;
         pos.ref.hitFlash = 8;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#8ff', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           // Shatter facet
           createExplosion(pos.x, pos.y, 70, '#8ff');
@@ -401,6 +404,9 @@ export class CrystalTitanBoss {
       if (Math.hypot(dx, dy) < pos.radius + 12) {
         pos.ref.hits--;
         pos.ref.hitFlash = 8;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#8ff', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           createExplosion(pos.x, pos.y, 70, '#8ff');
           // No points for facet (minion) destruction
@@ -427,6 +433,9 @@ export class CrystalTitanBoss {
         pos.ref.hits--;
         pos.ref.hitFlash = 8;
         any = true;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#8ff', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           createExplosion(pos.x, pos.y, 70, '#8ff');
           // No points for facet (minion) destruction

@@ -1,4 +1,60 @@
 // Particle module extracted from ast.html
+import { ENABLE_SPRITE_CACHE } from './constants.js';
+
+// Offscreen sprite caches
+const dotCache = new Map(); // key: `${color}|r${rInt}|g${gInt}`
+const ringCache = new Map(); // key: `${color}|r${rInt}|t${tInt}|g${gInt}`
+
+function getDotSprite(color, radius, glow) {
+  const rInt = Math.max(1, Math.round(radius));
+  const gInt = Math.max(0, Math.round(glow));
+  const key = `${color}|r${rInt}|g${gInt}`;
+  let spr = dotCache.get(key);
+  if (spr) return spr;
+  const margin = gInt + 4;
+  const size = rInt * 2 + margin * 2;
+  const cvs = document.createElement('canvas');
+  cvs.width = size;
+  cvs.height = size;
+  const ctx = cvs.getContext('2d');
+  const cx = size / 2, cy = size / 2;
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = gInt;
+  ctx.beginPath();
+  ctx.arc(cx, cy, rInt, 0, Math.PI * 2);
+  ctx.fill();
+  spr = { img: cvs, cx, cy };
+  dotCache.set(key, spr);
+  return spr;
+}
+
+function getRingSprite(color, radius, thickness, glow) {
+  const rInt = Math.max(1, Math.round(radius));
+  const tInt = Math.max(1, Math.round(thickness));
+  const gInt = Math.max(0, Math.round(glow));
+  const key = `${color}|r${rInt}|t${tInt}|g${gInt}`;
+  let spr = ringCache.get(key);
+  if (spr) return spr;
+  const margin = gInt + tInt + 4;
+  const size = rInt * 2 + margin * 2;
+  const cvs = document.createElement('canvas');
+  cvs.width = size;
+  cvs.height = size;
+  const ctx = cvs.getContext('2d');
+  const cx = size / 2, cy = size / 2;
+  ctx.strokeStyle = color;
+  ctx.shadowColor = color;
+  ctx.lineCap = 'round';
+  ctx.lineWidth = tInt;
+  ctx.shadowBlur = gInt;
+  ctx.beginPath();
+  ctx.arc(cx, cy, rInt, 0, Math.PI * 2);
+  ctx.stroke();
+  spr = { img: cvs, cx, cy };
+  ringCache.set(key, spr);
+  return spr;
+}
 export class Particle {
   constructor(x, y, vx, vy, color, lifetime) {
     this.x = x;
@@ -42,18 +98,27 @@ export class Particle {
 
   draw(ctx) {
     const alpha = Math.max(0, this.lifetime / this.maxLifetime);
+    if (ENABLE_SPRITE_CACHE && this.shape === 'dot') {
+      const spr = getDotSprite(this.color, this.radius, this.glow * 0.8);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(spr.img, this.x - spr.cx, this.y - spr.cy);
+      ctx.restore();
+      return;
+    }
+    if (ENABLE_SPRITE_CACHE && this.shape === 'ring') {
+      const shimmer = 0.85 + 0.15 * Math.sin(this.shimmerPhase + (this.maxLifetime - this.lifetime) * this.shimmerSpeed);
+      const spr = getRingSprite(this.color, this.radius, this.thickness, this.glow);
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, alpha * shimmer);
+      ctx.drawImage(spr.img, this.x - spr.cx, this.y - spr.cy);
+      ctx.restore();
+      return;
+    }
+    // Fallback/procedural paths
     ctx.globalAlpha = alpha;
     ctx.shadowColor = this.color;
-    if (this.shape === 'ring') {
-      const shimmer = 0.85 + 0.15 * Math.sin(this.shimmerPhase + (this.maxLifetime - this.lifetime) * this.shimmerSpeed);
-      ctx.globalAlpha = Math.max(0, alpha * shimmer);
-      ctx.strokeStyle = this.color;
-      ctx.shadowBlur = this.glow;
-      ctx.lineWidth = this.thickness;
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-      ctx.stroke();
-    } else if (this.shape === 'shard') {
+    if (this.shape === 'shard') {
       ctx.shadowBlur = this.glow;
       ctx.strokeStyle = this.color;
       ctx.lineWidth = this.thickness;
@@ -65,13 +130,22 @@ export class Particle {
       ctx.lineTo(this.length * 0.5, 0);
       ctx.stroke();
       ctx.restore();
-    } else {
+    } else if (this.shape === 'dot') {
       // dot
       ctx.shadowBlur = this.glow * 0.8;
       ctx.fillStyle = this.color;
       ctx.beginPath();
       ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
       ctx.fill();
+    } else if (this.shape === 'ring') {
+      const shimmer = 0.85 + 0.15 * Math.sin(this.shimmerPhase + (this.maxLifetime - this.lifetime) * this.shimmerSpeed);
+      ctx.globalAlpha = Math.max(0, alpha * shimmer);
+      ctx.strokeStyle = this.color;
+      ctx.shadowBlur = this.glow;
+      ctx.lineWidth = this.thickness;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+      ctx.stroke();
     }
     ctx.shadowBlur = 0;
     ctx.globalAlpha = 1;

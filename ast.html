@@ -448,6 +448,10 @@
                 <button class="menu-button level-select" onclick="startAtLevel(9)">LEVEL 9</button>
                 <button class="menu-button level-select" onclick="startAtLevel(10)">LEVEL 10</button>
                 <button class="menu-button level-select" onclick="startAtLevel(11)">LEVEL 11</button>
+                <button class="menu-button level-select" onclick="startAtLevel(12)">LEVEL 12</button>
+                <button class="menu-button level-select" onclick="startAtLevel(13)">LEVEL 13</button>
+                <button class="menu-button level-select" onclick="startAtLevel(14)">LEVEL 14</button>
+                <button class="menu-button level-select" onclick="startAtLevel(15)">LEVEL 15</button>
             </div>
             <p id="tipText">
                 <span id="tipA" class="tip-layer tip-visible">Tip will appear here.</span>
@@ -467,6 +471,18 @@
             <div style="margin-top:18px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
                 <button id="webglToggleBtn" class="menu-button" onclick="toggleWebGLSetting()">WEBGL: ON</button>
             </div>
+            <div style="margin-top:12px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+                <button id="fullscreenScaleBtn" class="menu-button" onclick="toggleFullscreenScale()">Fullscreen Scale: ON</button>
+            </div>
+            <div style="margin-top:12px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+                <button id="perfToggleBtn" class="menu-button" onclick="togglePerfStats()">Framerate: ON</button>
+            </div>
+            <div style="margin-top:12px; display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap;">
+                <span style="color:#0ff; font-weight:bold; letter-spacing:1px;">Render scale:</span>
+                <button id="scaleLowBtn" class="menu-button level-select" onclick="setRenderScale(0.5)">LOW</button>
+                <button id="scaleMedBtn" class="menu-button level-select" onclick="setRenderScale(0.75)">MED</button>
+                <button id="scaleHighBtn" class="menu-button level-select" onclick="setRenderScale(1)">HIGH</button>
+            </div>
         </div>
         
         <!-- Upgrade selection overlay -->
@@ -479,26 +495,31 @@
             <p id="upgradeHint" style="color:#0ff; font-size:16px; margin-top:18px; opacity:0.9;">Pick one upgrade. Effects persist for the rest of the run.</p>
         </div>
     </div>
+    <!-- Simple FPS overlay (bottom-right) -->
+    <div id="fpsOverlay" style="position:absolute; bottom:6px; right:8px; color:#fff; font: 12px monospace; pointer-events:none; opacity:0.9; z-index: 50;">-- FPS</div>
     
     <script type="module">
-        import { SHARD_MINION_CAP, GRAVITY_WELL_COUNT, GRAVITY_RADIUS, GRAVITY_STRENGTH, GRAVITY_SOFTENING, MINE_COUNT, MINE_RADIUS, MINE_DRIFT_SPEED, MINE_TRIGGER_RADIUS, MINE_SHOCKWAVE_RADIUS, MINE_PUSH_STRENGTH, MINE_BOUNCE_RESTITUTION, WORMHOLE_COUNT, WORMHOLE_RADIUS, WORMHOLE_COOLDOWN, COMBO_WINDOW_FRAMES, COMBO_START_BONUS, COMBO_INCREMENT, COMBO_MAX, NORMAL_ASTEROID_CAP, ENABLE_WEBGL, WEBGL_BACKEND, SCANLINE_ENABLED, SCANLINE_LINE_WIDTH, SCANLINE_CONTRAST, SCANLINE_VERTICAL, SCANLINE_NOISE, SCANLINE_CURVATURE, BLOOM_ENABLED, BLOOM_THRESHOLD, BLOOM_SCALE, BLOOM_BRIGHTNESS, LENS_ENABLED, LENS_STRENGTH, LENS_RADIUS, VIGNETTE_ENABLED, VIGNETTE_SIZE, VIGNETTE_DARKNESS } from './constants.js';
-        import { setHUDVisible, lineCircleCollision, applyGravityTo as applyGravityToUtil, applyShockwave as applyShockwaveUtil, isSafeLocation as isSafeLocationUtil, createExplosion as createExplosionUtil, awardPoints as awardPointsUtil, safeRespawn as safeRespawnUtil, spawnBonusText as spawnBonusTextUtil } from './utils.js';
+        import { SHARD_MINION_CAP, GRAVITY_WELL_COUNT, GRAVITY_RADIUS, GRAVITY_STRENGTH, GRAVITY_SOFTENING, MINE_COUNT, MINE_RADIUS, MINE_DRIFT_SPEED, MINE_TRIGGER_RADIUS, MINE_SHOCKWAVE_RADIUS, MINE_PUSH_STRENGTH, MINE_BOUNCE_RESTITUTION, WORMHOLE_COUNT, WORMHOLE_RADIUS, WORMHOLE_COOLDOWN, COMBO_WINDOW_FRAMES, COMBO_START_BONUS, COMBO_INCREMENT, COMBO_MAX, NORMAL_ASTEROID_CAP, ENABLE_WEBGL, WEBGL_BACKEND, WEBGL_RENDER_SCALE, SCANLINE_ENABLED, SCANLINE_LINE_WIDTH, SCANLINE_CONTRAST, SCANLINE_VERTICAL, SCANLINE_NOISE, SCANLINE_CURVATURE, BLOOM_ENABLED, BLOOM_THRESHOLD, BLOOM_SCALE, BLOOM_BRIGHTNESS, LENS_ENABLED, LENS_STRENGTH, LENS_RADIUS, VIGNETTE_ENABLED, VIGNETTE_SIZE, VIGNETTE_DARKNESS, ENABLE_SPATIAL_GRID, GRID_CELL_SIZE, ENABLE_PERF_STATS, PERF_LOG_INTERVAL_FRAMES } from './constants.js';
+        import { setHUDVisible, lineCircleCollision, applyGravityTo as applyGravityToUtil, applyShockwave as applyShockwaveUtil, isSafeLocation as isSafeLocationUtil, createExplosion as createExplosionUtil, awardPoints as awardPointsUtil, safeRespawn as safeRespawnUtil, spawnBonusText as spawnBonusTextUtil, SpatialGrid } from './utils.js';
         import { ScoreMilestone, VignetteEffect, WarpTunnel } from './effects.js';
-        import { GravityWell, Wormhole } from './hazards.js';
+        import { GravityWell, Wormhole, TetherPair } from './hazards.js';
         import { Mine } from './mines.js';
         import { Powerup } from './powerups.js';
         import { Asteroid, setPowerupDropMultiplier } from './asteroid.js';
+        import { PhasedAsteroid } from './phasedAsteroid.js';
         import { Particle } from './particle.js';
         import { EnemyBullet } from './enemyBullets.js';
         import { Bullet, setBulletRangeMultiplier, setChargedSizeMultiplier } from './bullets.js';
-        import { Drone } from './drones.js';
+        import { Drone, AttackDrone } from './drones.js';
         import { StrandedShip } from './strandedShip.js';
         import { ColossusBoss } from './colossusBoss.js';
         import { CrystalTitanBoss } from './crystalTitanBoss.js';
         import { AlienCarrierBoss } from './alienCarrierBoss.js';
         import { AlienMothershipBoss } from './alienMothershipBoss.js';
         import { DreadshipBoss } from './dreadshipBoss.js';
+        import { FinalAsteroidBoss } from './finalAsteroidBoss.js';
         import { AttractMode } from './attractMode.js';
+        import { TETHER_PAIR_COUNT, TETHER_POINTS_ON_BREAK } from './constants.js';
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         // Optional WebGL renderer overlay (PixiJS) for post-processing and feedback effects
@@ -509,6 +530,10 @@
         const attract = new AttractMode({ canvas, ctx });
         // Runtime flag (default from constants). Allows toggling without reload.
         let webglEnabled = ENABLE_WEBGL;
+        let webglRenderScale = WEBGL_RENDER_SCALE; // runtime-adjustable render scale for overlay
+        let fullscreenScaleEnabled = true; // when false, canvas is not scaled to fullscreen
+        // Runtime perf stats toggle (controls FPS overlay + periodic console logging)
+        let perfStatsEnabled = ENABLE_PERF_STATS;
 
         // Rotating start screen tips (3s, crossfade) — user's original tips
         const START_TIPS = [
@@ -578,13 +603,15 @@
             try {
                 if (!window.PIXI) { console.warn('PIXI not loaded. WebGL overlay disabled.'); return; }
                 const container = document.getElementById('gameContainer');
+                let overlayScale = Math.max(0.25, Math.min(1.0, webglRenderScale || 1.0));
                 const app = new PIXI.Application({
-                    width: canvas.width,
-                    height: canvas.height,
+                    width: Math.max(1, Math.round(canvas.width * overlayScale)),
+                    height: Math.max(1, Math.round(canvas.height * overlayScale)),
                     backgroundAlpha: 0,
                     antialias: false,
                     autoStart: false,
-                    resolution: (window.devicePixelRatio || 1)
+                    // keep resolution at 1 to honor render-scale explicitly
+                    resolution: 1
                 });
                 // Place overlay above base canvas but below HUD
                 app.view.style.position = 'absolute';
@@ -592,13 +619,16 @@
                 app.view.style.left = '0';
                 app.view.style.pointerEvents = 'none';
                 app.view.style.zIndex = '5';
+                // Stretch low-res overlay to match base canvas size
+                app.view.style.width = canvas.width + 'px';
+                app.view.style.height = canvas.height + 'px';
                 container.appendChild(app.view);
 
                 // Source from the base 2D canvas
                 const sourceTexture = PIXI.Texture.from(canvas);
                 const sourceSprite = new PIXI.Sprite(sourceTexture);
                 sourceSprite.x = 0; sourceSprite.y = 0;
-                sourceSprite.width = canvas.width; sourceSprite.height = canvas.height;
+                sourceSprite.width = app.renderer.width; sourceSprite.height = app.renderer.height;
 
                 // Composite container for feedback (afterimage) + source + glow layer
                 const composite = new PIXI.Container();
@@ -611,7 +641,7 @@
                 const feedbackSprite = new PIXI.Sprite(rtA);
                 feedbackSprite.alpha = 0.92; // trail persistence
                 feedbackSprite.x = 0; feedbackSprite.y = 0;
-                feedbackSprite.width = canvas.width; feedbackSprite.height = canvas.height;
+                feedbackSprite.width = app.renderer.width; feedbackSprite.height = app.renderer.height;
 
                 composite.addChild(feedbackSprite);
                 composite.addChild(sourceSprite);
@@ -620,7 +650,7 @@
                 // Output sprite shown on stage with post-processing filters
                 const outputSprite = new PIXI.Sprite(rtA);
                 outputSprite.x = 0; outputSprite.y = 0;
-                outputSprite.width = canvas.width; outputSprite.height = canvas.height;
+                outputSprite.width = app.renderer.width; outputSprite.height = app.renderer.height;
 
                 // Build filter chain (tunable; subtle by default)
                 const filters = [];
@@ -717,11 +747,16 @@
                     outputSprite.texture = rtA;
                 }
                 function resizeOverlay() {
-                    app.renderer.resize(canvas.width, canvas.height);
-                    sourceSprite.width = canvas.width; sourceSprite.height = canvas.height;
-                    feedbackSprite.width = canvas.width; feedbackSprite.height = canvas.height;
-                    outputSprite.width = canvas.width; outputSprite.height = canvas.height;
-                        if (bulge) bulge.center = [canvas.width * 0.5, canvas.height * 0.5];
+                    const w = Math.max(1, Math.round(canvas.width * overlayScale));
+                    const h = Math.max(1, Math.round(canvas.height * overlayScale));
+                    app.renderer.resize(w, h);
+                    // Stretch the DOM view to match full canvas size
+                    app.view.style.width = canvas.width + 'px';
+                    app.view.style.height = canvas.height + 'px';
+                    sourceSprite.width = app.renderer.width; sourceSprite.height = app.renderer.height;
+                    feedbackSprite.width = app.renderer.width; feedbackSprite.height = app.renderer.height;
+                    outputSprite.width = app.renderer.width; outputSprite.height = app.renderer.height;
+                    if (bulge) bulge.center = [canvas.width * 0.5, canvas.height * 0.5];
                     if (zoom) zoom.center = [canvas.width * 0.5, canvas.height * 0.5];
                     recreateRenderTargets();
                 }
@@ -753,8 +788,10 @@
                         try { app.destroy(true, { children: true, texture: true, baseTexture: true }); } catch (e) {}
                     },
                     update: (state = {}) => {
-                        // Sync dims if changed
-                        if (app.renderer.width !== canvas.width || app.renderer.height !== canvas.height) {
+                        // Sync dims if changed (consider render scale)
+                        const targetW = Math.max(1, Math.round(canvas.width * overlayScale));
+                        const targetH = Math.max(1, Math.round(canvas.height * overlayScale));
+                        if (app.renderer.width !== targetW || app.renderer.height !== targetH) {
                             resizeOverlay();
                         }
                         // Refresh source texture from base canvas
@@ -824,11 +861,13 @@
                             // Fallback: lightly increase bloom scale to simulate smear
                             try { advBloom.bloomScale = 0.9 + amount * 1.2; } catch (e) {}
                         } else if (simpleBloom) {
-                            try { simpleBloom.blur = 2 + amount * 8; } catch (e) {}
+                            try { simpleBloom.blur = 2 + amount * 6; } catch (e) {}
                         }
                     },
-                    setFeedbackAlpha: (alpha = defaultFeedbackAlpha) => {
-                        feedbackSprite.alpha = Math.max(0, Math.min(1, alpha));
+                    // Update overlay render scale at runtime
+                    setScale: (s = 1.0) => {
+                        overlayScale = Math.max(0.25, Math.min(1.0, s || 1.0));
+                        resizeOverlay();
                     },
                     resetFeedbackAlpha: () => { feedbackSprite.alpha = defaultFeedbackAlpha; },
                     // Hooks to modulate effects at runtime
@@ -888,7 +927,9 @@
                         // Additive glow burst
                         const glow = new PIXI.Graphics();
                         glow.beginFill(0xffffff, 0.85);
-                        glow.drawCircle(0, 0, 24 * (0.5 + k));
+                        // Use a smaller base size for very small pulses (e.g., 'micro' profile)
+                        const baseSize = (radius <= 16) ? 12 : 24; // 50% smaller when small radius
+                        glow.drawCircle(0, 0, baseSize * (0.5 + k));
                         glow.endFill();
                         glow.x = (x == null ? canvas.width * 0.5 : x);
                         glow.y = (y == null ? canvas.height * 0.5 : y);
@@ -934,7 +975,7 @@
         function updateCanvasScale() {
             const w = window.innerWidth || document.documentElement.clientWidth || document.body.clientWidth;
             const h = window.innerHeight || document.documentElement.clientHeight || document.body.clientHeight;
-            const scale = Math.min(w / canvas.width, h / canvas.height);
+            const scale = fullscreenScaleEnabled ? Math.min(w / canvas.width, h / canvas.height) : 1;
             // Ensure the base (unscaled) size is the logical resolution
             container.style.width = canvas.width + 'px';
             container.style.height = canvas.height + 'px';
@@ -1145,6 +1186,12 @@
         let score = 0;
         let lives = 3;
         let frameCount = 0;
+        // Perf tracking
+        let lastPerfNow = performance.now();
+        let fpsEma = 60; // exponential moving average of FPS
+        let perfLogCounter = 0;
+        const fpsEl = document.getElementById('fpsOverlay');
+        if (fpsEl && !perfStatsEnabled) fpsEl.style.display = 'none';
         let level = 1; // 1: 0-1000, 2: 1001-2000, 3: 2001+
         let strandedShip = null; // object when active in level 2
         let level2Spawned = false; // ensure spawn only once
@@ -1157,6 +1204,9 @@
         let level10Spawned = false; // ensure spawn only once for level 10
         let level11Spawned = false; // ensure spawn only once for level 11
         let level12Spawned = false; // ensure spawn only once for level 12
+        let level13Spawned = false; // ensure spawn only once for level 13
+        let level14Spawned = false; // ensure spawn only once for level 14
+        let level15Spawned = false; // ensure spawn only once for level 15
         let levelMessageTimer = 0; // frames to show objective neon message
         let levelMessageText = "";
         let hiScore = 0; // persistent high score
@@ -1173,6 +1223,15 @@
             const container = document.getElementById('gameContainer');
             if (!objectiveEl || !container) return;
             if (objectiveEl.classList.contains('hidden')) return; // only fit when visible
+            // Throttle: re-fit at most every 6 frames, but run immediately on text change
+            const currentText = objectiveEl.textContent || '';
+            if (objectiveEl.dataset.lastMeasuredText !== currentText) {
+                objectiveEl.dataset.lastMeasuredText = currentText;
+                objectiveEl.dataset.lastFitFrame = String(-999999); // force immediate fit on text change
+            }
+            const lastFit = Number(objectiveEl.dataset.lastFitFrame || -999999);
+            if (typeof frameCount === 'number' && (frameCount - lastFit) < 6) return;
+            objectiveEl.dataset.lastFitFrame = String(typeof frameCount === 'number' ? frameCount : 0);
             // reset to base size before measuring
             objectiveEl.style.fontSize = OBJECTIVE_BASE_FONT_PX + 'px';
             // measure required width at base size
@@ -1186,16 +1245,58 @@
         }
         window.addEventListener('resize', () => {
             updateCanvasScale();
+            const el = document.getElementById('objective');
+            if (el) el.dataset.lastFitFrame = String(-999999);
             fitObjectiveSingleLine();
         });
         // UI effect timers
         let levelGlowTimer = 0; // frames of level label pulsing after level advance
         let hiGlowTimer = 0; // frames of score glow after beating hi-score (3s)
         let spawnVisualTimer = 0; // frames of spawn/respawn overscale trail effect
+        const SPAWN_VISUAL_SPAN = 46; // ~35% faster; total frames for respawn visual to shrink to 1x
         // Level 4 boss
         let boss = null; // instance of ColossusBoss when active
         let bossActive = false;
         let bossDefeatFreeze = 0;
+        // Cached sprite for respawn overscale effect (cheap to scale via drawImage)
+        let respawnSpriteCanvas = null;
+        function getRespawnSpriteCanvas() {
+            if (respawnSpriteCanvas) return respawnSpriteCanvas;
+            const c = document.createElement('canvas');
+            // High resolution to keep crisp lines even when upscaled
+            c.width = 512; c.height = 512;
+            const g = c.getContext('2d');
+            g.translate(c.width / 2, c.height / 2);
+            g.strokeStyle = '#0ff';
+            g.lineJoin = 'round';
+            g.lineCap = 'round';
+            // Upscale internal drawing for better raster quality
+            g.save();
+            // Draw at 8x internal scale to maximize pixel density
+            g.scale(8, 8);
+            const drawShip = (lw, a) => {
+                g.save();
+                g.globalAlpha = a;
+                // Adjust line widths so final on-canvas thickness matches original look
+                // (scale 8 with widths 1.5/1/0.5 ≈ 12/8/4 px)
+                g.lineWidth = lw;
+                g.beginPath();
+                g.moveTo(15, 0);
+                g.lineTo(-10, -10);
+                g.lineTo(-5, 0);
+                g.lineTo(-10, 10);
+                g.closePath();
+                g.stroke();
+                g.restore();
+            };
+            // Multi-pass stroke to approximate neon without expensive shadows
+            drawShip(1.5, 0.18);
+            drawShip(1.0, 0.35);
+            drawShip(0.5, 0.9);
+            g.restore();
+            respawnSpriteCanvas = c;
+            return respawnSpriteCanvas;
+        }
         
         // Enemy projectiles (from boss/plates)
         let enemyBullets = [];
@@ -1233,6 +1334,7 @@
         
         // Game objects arrays
         let asteroids = [];
+        let phasedAsteroids = [];
         let bullets = [];
         let particles = [];
         let powerups = [];
@@ -1250,6 +1352,7 @@
         let wormholes = [];
         let warpTunnels = [];
         let vignetteEffects = [];
+        let tetherPairs = [];
         let scoreMilestones = [];
         let mines = [];
         let stars = [];
@@ -1716,6 +1819,7 @@
                 else if (name === 'CrystalTitanBoss') { cA = 'rgba(120,255,255,'; cB = 'rgba(255,120,255,'; }
                 else if (name === 'AlienCarrierBoss') { cA = 'rgba(120,255,120,'; cB = 'rgba(60,180,100,'; }
                 else if (name === 'AlienMothershipBoss') { cA = 'rgba(255,100,120,'; cB = 'rgba(255,0,140,'; }
+                else if (name === 'FinalAsteroidBoss') { cA = 'rgba(255,120,120,'; cB = 'rgba(255,40,80,'; }
                 // Size and rotation
                 const base = Math.min(canvas.width, canvas.height);
                 const rx = Math.max(140, base * 0.28);
@@ -1831,7 +1935,10 @@
         // If fixed=true, skip applying the level multiplier (for boss defeats only).
         function awardPoints(basePoints, x, y, fixed = false) {
             const beforeMilestones = scoreMilestones.length;
-            const scaledPoints = fixed ? basePoints : Math.round(basePoints * getLevelMultiplier(level));
+            let effective = basePoints;
+            // Level 13: 80% reduction to points across the board (before level multiplier)
+            if (!fixed && level === 13) effective *= 0.2;
+            const scaledPoints = fixed ? basePoints : Math.round(effective * getLevelMultiplier(level));
             const updated = awardPointsUtil(
                 scaledPoints,
                 x,
@@ -1876,33 +1983,32 @@
         
         // Draw player ship
         function drawPlayer() {
-            // Spawn/respawn CRT-like oversized shrink and trails during invulnerability phase
+            // Spawn/respawn oversized shrink and trails using cached sprite (no heavy shadows)
             if (spawnVisualTimer > 0) {
-                const span = 40;
-                const f = Math.min(1, spawnVisualTimer / span);
-                const maxScale = Math.max(canvas.width, canvas.height) / 24; // start very large
+                // Use a consistent span so the sprite reaches 1x before disappearing
+                const span = SPAWN_VISUAL_SPAN;
+                // Offset by 1 so the final drawn frame lands exactly at 1x scale
+                const f = Math.min(1, Math.max(0, (spawnVisualTimer - 1) / span));
+                // Clamp the initial scale to avoid extreme upscaling that causes pixelation
+                const maxScale = Math.min(10, Math.max(5, Math.max(canvas.width, canvas.height) / 128));
                 const baseScale = 1 + (maxScale - 1) * f;
-                const trailCount = 3;
+                const sprite = getRespawnSpriteCanvas();
+                const sw = sprite.width, sh = sprite.height;
+                // Use high-quality smoothing for cleaner upscale/rotation
+                ctx.save();
+                ctx.imageSmoothingEnabled = true;
+                try { ctx.imageSmoothingQuality = 'high'; } catch (e) {}
+                const trailCount = 2; // fewer, cheaper trails
                 for (let i = trailCount; i >= 1; i--) {
-                    const s = baseScale * (1 + i * 0.12);
-                    const alpha = 0.05 + (i * 0.05);
+                    // Trails also converge to exactly 1x when baseScale reaches 1x
+                    const s = 1 + (baseScale - 1) * (1 + i * 0.12);
+                    const alpha = 0.06 + (i * 0.06);
                     ctx.save();
                     ctx.translate(player.x, player.y);
                     ctx.rotate(player.angle);
                     ctx.scale(s, s);
                     ctx.globalAlpha = alpha;
-                    ctx.shadowBlur = 18;
-                    ctx.shadowColor = '#0ff';
-                    ctx.strokeStyle = '#0ff';
-                    // keep stroke reasonable regardless of scale
-                    ctx.lineWidth = Math.max(1, (3 + Math.max(0, player.armor || 0)) / s);
-                    ctx.beginPath();
-                    ctx.moveTo(15, 0);
-                    ctx.lineTo(-10, -10);
-                    ctx.lineTo(-5, 0);
-                    ctx.lineTo(-10, 10);
-                    ctx.closePath();
-                    ctx.stroke();
+                    ctx.drawImage(sprite, -sw / 2, -sh / 2);
                     ctx.restore();
                 }
                 // Core oversized pass
@@ -1910,18 +2016,10 @@
                 ctx.translate(player.x, player.y);
                 ctx.rotate(player.angle);
                 ctx.scale(baseScale, baseScale);
-                ctx.globalAlpha = 0.28;
-                ctx.shadowBlur = 22;
-                ctx.shadowColor = '#0ff';
-                ctx.strokeStyle = '#0ff';
-                ctx.lineWidth = Math.max(1, (3 + Math.max(0, player.armor || 0)) / baseScale);
-                ctx.beginPath();
-                ctx.moveTo(15, 0);
-                ctx.lineTo(-10, -10);
-                ctx.lineTo(-5, 0);
-                ctx.lineTo(-10, 10);
-                ctx.closePath();
-                ctx.stroke();
+                ctx.globalAlpha = 0.35;
+                ctx.drawImage(sprite, -sw / 2, -sh / 2);
+                ctx.restore();
+                // Restore smoothing state for the rest of the frame
                 ctx.restore();
             }
             // Afterimage trail
@@ -2551,9 +2649,10 @@
         function createExplosion(x, y, radius, color, profile = 'default') {
             // Delegate to utils.js with Particle class and particles array
             createExplosionUtil(x, y, radius, color, profile, Particle, particles);
-            // WebGL overlay pulse
+            // WebGL overlay pulse — halve radius for 'micro' profile
             if (glRenderer && glRenderer.pulseExplosion) {
-                glRenderer.pulseExplosion(radius, x, y);
+                const pulseR = (profile === 'micro') ? Math.max(1, Math.floor(radius * 0.5)) : radius;
+                glRenderer.pulseExplosion(pulseR, x, y);
             }
         }
         function spawnParticle(x, y, vx, vy, color, lifetime) {
@@ -2630,8 +2729,31 @@
             asteroids.push(ast);
         }
 
+        // Spawn a phased asteroid just outside the screen bounds, moving inward
+        function spawnPhasedAsteroidOffscreen() {
+            if (bossActive) return;
+            const margin = 40;
+            const side = Math.floor(Math.random() * 4);
+            let x = 0, y = 0;
+            if (side === 0) { x = -margin; y = Math.random() * canvas.height; }
+            else if (side === 1) { x = canvas.width + margin; y = Math.random() * canvas.height; }
+            else if (side === 2) { x = Math.random() * canvas.width; y = -margin; }
+            else { x = Math.random() * canvas.width; y = canvas.height + margin; }
+
+            const targetX = canvas.width / 2 + (Math.random() - 0.5) * canvas.width * 0.4;
+            const targetY = canvas.height / 2 + (Math.random() - 0.5) * canvas.height * 0.4;
+            const ang = Math.atan2(targetY - y, targetX - x) + (Math.random() - 0.5) * 0.5;
+            const pa = new PhasedAsteroid(x, y);
+            const sp = Math.hypot(pa.vx, pa.vy) || pa.speed || 0.7;
+            pa.vx = Math.cos(ang) * sp;
+            pa.vy = Math.sin(ang) * sp;
+            phasedAsteroids.push(pa);
+        }
+
         // Convenience for continuous normal asteroid flow
         function spawnOffscreenNormalAsteroid() {
+            // Suppress normal asteroid spawning entirely during Level 13
+            if (level === 13) return;
             // Level 9: 35% chance to spawn an armored asteroid instead; not limited by normal cap
             if (level === 9 && Math.random() < 0.35) {
                 spawnAsteroidOffscreen(4, true, false);
@@ -2731,30 +2853,101 @@
             if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
             createExplosion(player.x, player.y, 80, '#6ff');
             // Trigger spawn visual on respawn
-            spawnVisualTimer = 40;
+            spawnVisualTimer = SPAWN_VISUAL_SPAN;
         }
         
         // lineCircleCollision imported from utils.js
         
         function checkCollisions() {
             // Bullet-asteroid collisions
+            let asteroidGrid = null;
+            if (ENABLE_SPATIAL_GRID) {
+                asteroidGrid = new SpatialGrid(GRID_CELL_SIZE);
+                asteroidGrid.buildFrom(asteroids);
+            }
+            let maxAsteroidRadius = 0;
+            if (ENABLE_SPATIAL_GRID && asteroids && asteroids.length > 0) {
+                for (let i = 0; i < asteroids.length; i++) {
+                    const r = asteroids[i].radius || 0;
+                    if (r > maxAsteroidRadius) maxAsteroidRadius = r;
+                }
+            }
+            // Prepare grids for mines and drones (broad-phase)
+            let mineGrid = null, maxMineRadius = 0;
+            if (ENABLE_SPATIAL_GRID && mines && mines.length > 0) {
+                mineGrid = new SpatialGrid(GRID_CELL_SIZE);
+                mineGrid.buildFrom(mines);
+                for (let i = 0; i < mines.length; i++) {
+                    const r = mines[i].radius || 0;
+                    if (r > maxMineRadius) maxMineRadius = r;
+                }
+            }
+            let droneGrid = null, maxDroneRadius = 0;
+            if (ENABLE_SPATIAL_GRID && drones && drones.length > 0) {
+                droneGrid = new SpatialGrid(GRID_CELL_SIZE);
+                droneGrid.buildFrom(drones);
+                for (let i = 0; i < drones.length; i++) {
+                    const r = drones[i].radius || 0;
+                    if (r > maxDroneRadius) maxDroneRadius = r;
+                }
+            }
+            // Grid for friendly clone turrets
+            let cloneGrid = null, maxCloneRadius = 0;
+            if (ENABLE_SPATIAL_GRID && cloneDrones && cloneDrones.length > 0) {
+                cloneGrid = new SpatialGrid(GRID_CELL_SIZE);
+                cloneGrid.buildFrom(cloneDrones);
+                for (let i = 0; i < cloneDrones.length; i++) {
+                    const r = cloneDrones[i].radius || 0;
+                    if (r > maxCloneRadius) maxCloneRadius = r;
+                }
+            }
             bullets.forEach((bullet, bulletIndex) => {
-                asteroids.forEach((asteroid, asteroidIndex) => {
+                const asteroidIterable = ENABLE_SPATIAL_GRID
+                    ? asteroidGrid.queryCircle(bullet.x, bullet.y, bullet.radius + maxAsteroidRadius)
+                    : asteroids;
+                asteroidIterable.forEach((asteroid) => {
                     const dx = bullet.x - asteroid.x;
                     const dy = bullet.y - asteroid.y;
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     
                     if (dist < asteroid.radius + bullet.radius) {
                         bullets.splice(bulletIndex, 1);
-                        const newAsteroids = asteroid.hit(asteroidDeps());
+                        const newAsteroids = asteroid.hit(asteroidDeps(), bullet.x, bullet.y);
                         if (newAsteroids) {
                             // Off-screen replacement for fully destroyed small normal
                             maybeSpawnReplacement(asteroid, newAsteroids);
-                            asteroids.splice(asteroidIndex, 1);
+                            const asteroidIndex = asteroids.indexOf(asteroid);
+                            if (asteroidIndex !== -1) {
+                                asteroids.splice(asteroidIndex, 1);
+                            }
                             asteroids.push(...newAsteroids);
+                            if (ENABLE_SPATIAL_GRID) {
+                                // Rebuild grid so subsequent bullets see updated asteroids this frame
+                                asteroidGrid.buildFrom(asteroids);
+                            }
                         }
                     }
                 });
+                // Bullet-phasedAsteroid collisions (only when visible)
+                if (phasedAsteroids && phasedAsteroids.length > 0) {
+                    for (let i = 0; i < phasedAsteroids.length; i++) {
+                        const pa = phasedAsteroids[i];
+                        if (!pa || pa.dead || !pa.visible) continue;
+                        const dx = bullet.x - pa.x;
+                        const dy = bullet.y - pa.y;
+                        const dist = Math.hypot(dx, dy);
+                        if (dist < pa.radius + bullet.radius) {
+                            bullets.splice(bulletIndex, 1);
+                            // Destroy or damage with proper deps and shockwave tuning
+                            pa.hit({
+                                createExplosion,
+                                awardPoints: (p, x, y, fixed) => awardPoints(p, x, y, fixed),
+                                applyShockwave: (x, y) => applyShockwave(x, y, MINE_SHOCKWAVE_RADIUS, MINE_PUSH_STRENGTH)
+                            }, bullet.x, bullet.y);
+                            // Do not break; bullet removed already
+                        }
+                    }
+                }
                 // Bullet-boss collisions
                 if (bossActive && boss) {
                     if (boss.handleBulletCollision(bullet)) {
@@ -2763,7 +2956,10 @@
                 }
                 // Bullet-mine collisions (detonate mines when shot)
                 if (mines && mines.length > 0) {
-                    mines.forEach((mine, mIndex) => {
+                    const mineIterable = (ENABLE_SPATIAL_GRID && mineGrid)
+                        ? mineGrid.queryCircle(bullet.x, bullet.y, bullet.radius + maxMineRadius)
+                        : mines;
+                    mineIterable.forEach((mine) => {
                         if (mine.exploded) return;
                         const dxm = bullet.x - mine.x;
                         const dym = bullet.y - mine.y;
@@ -2776,16 +2972,32 @@
                 }
                 // Bullet-drone collisions
                 if (drones && drones.length > 0) {
-                    for (let i = 0; i < drones.length; i++) {
-                        const d = drones[i];
-                        if (d.dead) continue;
-                        const dx = bullet.x - d.x, dy = bullet.y - d.y;
-                        if (Math.hypot(dx, dy) < d.radius + bullet.radius) {
-                            bullets.splice(bulletIndex, 1);
-                            d.dead = true;
-                            createExplosion(d.x, d.y, 40, '#6ff');
-                            // No points are awarded for killing drones
-                            break;
+                    if (ENABLE_SPATIAL_GRID && droneGrid) {
+                        const candidates = droneGrid.queryCircle(bullet.x, bullet.y, bullet.radius + maxDroneRadius);
+                        for (let i = 0; i < candidates.length; i++) {
+                            const d = candidates[i];
+                            if (d.dead) continue;
+                            const dx = bullet.x - d.x, dy = bullet.y - d.y;
+                            if (Math.hypot(dx, dy) < d.radius + bullet.radius) {
+                                bullets.splice(bulletIndex, 1);
+                                d.dead = true;
+                                createExplosion(d.x, d.y, 40, (d.explosionColor || '#6ff'));
+                                // No points are awarded for killing drones
+                                break;
+                            }
+                        }
+                    } else {
+                        for (let i = 0; i < drones.length; i++) {
+                            const d = drones[i];
+                            if (d.dead) continue;
+                            const dx = bullet.x - d.x, dy = bullet.y - d.y;
+                            if (Math.hypot(dx, dy) < d.radius + bullet.radius) {
+                                bullets.splice(bulletIndex, 1);
+                                d.dead = true;
+                                createExplosion(d.x, d.y, 40, (d.explosionColor || '#6ff'));
+                                // No points are awarded for killing drones
+                                break;
+                            }
                         }
                     }
                 }
@@ -2794,74 +3006,154 @@
             // Turret collisions: destroy on one hit
             if (cloneDrones && cloneDrones.length > 0) {
                 // Asteroids colliding with turrets
-                asteroids.forEach(asteroid => {
+                if (ENABLE_SPATIAL_GRID && asteroidGrid) {
                     for (let i = 0; i < cloneDrones.length; i++) {
                         const t = cloneDrones[i];
                         if (t.dead) continue;
-                        const dx = t.x - asteroid.x;
-                        const dy = t.y - asteroid.y;
-                        if (Math.hypot(dx, dy) < t.radius + asteroid.radius) {
-                            t.dead = true;
-                            createExplosion(t.x, t.y, 36, '#6ff');
+                        const candidates = asteroidGrid.queryCircle(t.x, t.y, t.radius + maxAsteroidRadius);
+                        for (let j = 0; j < candidates.length; j++) {
+                            const asteroid = candidates[j];
+                            const dx = t.x - asteroid.x;
+                            const dy = t.y - asteroid.y;
+                            if (Math.hypot(dx, dy) < t.radius + asteroid.radius) {
+                                t.dead = true;
+                                createExplosion(t.x, t.y, 36, '#6ff');
+                                break;
+                            }
                         }
                     }
-                });
+                } else {
+                    asteroids.forEach(asteroid => {
+                        for (let i = 0; i < cloneDrones.length; i++) {
+                            const t = cloneDrones[i];
+                            if (t.dead) continue;
+                            const dx = t.x - asteroid.x;
+                            const dy = t.y - asteroid.y;
+                            if (Math.hypot(dx, dy) < t.radius + asteroid.radius) {
+                                t.dead = true;
+                                createExplosion(t.x, t.y, 36, '#6ff');
+                            }
+                        }
+                    });
+                }
                 // Enemy bullets hitting turrets
                 if (enemyBullets && enemyBullets.length > 0) {
                     filterInPlace(enemyBullets, eb => {
                         if (eb.lifetime <= 0) return false;
-                        for (let i = 0; i < cloneDrones.length; i++) {
-                            const t = cloneDrones[i];
-                            if (t.dead) continue;
-                            const dx = eb.x - t.x;
-                            const dy = eb.y - t.y;
-                            if (Math.hypot(dx, dy) < eb.radius + t.radius) {
-                                t.dead = true;
-                                createExplosion(t.x, t.y, 36, '#6ff');
-                                return false; // remove bullet
+                        if (ENABLE_SPATIAL_GRID && cloneGrid) {
+                            const candidates = cloneGrid.queryCircle(eb.x, eb.y, eb.radius + maxCloneRadius);
+                            for (let i = 0; i < candidates.length; i++) {
+                                const t = candidates[i];
+                                if (t.dead) continue;
+                                const dx = eb.x - t.x;
+                                const dy = eb.y - t.y;
+                                if (Math.hypot(dx, dy) < eb.radius + t.radius) {
+                                    t.dead = true;
+                                    createExplosion(t.x, t.y, 36, '#6ff');
+                                    return false; // remove bullet
+                                }
                             }
+                            return eb.lifetime > 0;
+                        } else {
+                            for (let i = 0; i < cloneDrones.length; i++) {
+                                const t = cloneDrones[i];
+                                if (t.dead) continue;
+                                const dx = eb.x - t.x;
+                                const dy = eb.y - t.y;
+                                if (Math.hypot(dx, dy) < eb.radius + t.radius) {
+                                    t.dead = true;
+                                    createExplosion(t.x, t.y, 36, '#6ff');
+                                    return false; // remove bullet
+                                }
+                            }
+                            return true;
                         }
-                        return true;
                     });
                 }
             }
 
-            // Shield-asteroid bounce (no damage while shield is active)
-            if (player.shielded > 0) {
-                const shieldR = player.radius + 15 * shieldRadiusMul;
-                asteroids.forEach(asteroid => {
-                    const dx = asteroid.x - player.x;
-                    const dy = asteroid.y - player.y;
-                    const dist = Math.sqrt(dx * dx + dy * dy);
-                    if (dist < shieldR + asteroid.radius) {
-                        const nx = (dist === 0) ? 1 : dx / dist;
-                        const ny = (dist === 0) ? 0 : dy / dist;
-                        // Reflect asteroid velocity about normal
-                        const dot = asteroid.vx * nx + asteroid.vy * ny;
-                        asteroid.vx = asteroid.vx - 2 * dot * nx;
-                        asteroid.vy = asteroid.vy - 2 * dot * ny;
-                        // Nudge speed slightly and push asteroid out of overlap
-                        asteroid.vx *= 1.05;
-                        asteroid.vy *= 1.05;
-                        asteroid.x = player.x + nx * (shieldR + asteroid.radius + 2);
-                        asteroid.y = player.y + ny * (shieldR + asteroid.radius + 2);
-                    }
-                });
-                // Pop enemy bullets that hit the shield
-                if (enemyBullets && enemyBullets.length > 0) {
-                    filterInPlace(enemyBullets, eb => {
-                        const dx = eb.x - player.x;
-                        const dy = eb.y - player.y;
-                        const d = Math.hypot(dx, dy);
-                        if (d < shieldR + eb.radius) {
-                            // absorb
-                            return false;
-                        }
-                        return eb.lifetime > 0;
-                    });
+    // Shield-asteroid bounce (no damage while shield is active)
+    if (player.shielded > 0) {
+        const shieldR = player.radius + 15 * shieldRadiusMul;
+        if (ENABLE_SPATIAL_GRID && asteroidGrid) {
+            const candidates = asteroidGrid.queryCircle(player.x, player.y, shieldR + maxAsteroidRadius);
+            for (let i = 0; i < candidates.length; i++) {
+                const asteroid = candidates[i];
+                const dx = asteroid.x - player.x;
+                const dy = asteroid.y - player.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < shieldR + asteroid.radius) {
+                    const nx = (dist === 0) ? 1 : dx / dist;
+                    const ny = (dist === 0) ? 0 : dy / dist;
+                    // Reflect asteroid velocity about normal
+                    const dot = asteroid.vx * nx + asteroid.vy * ny;
+                    asteroid.vx = asteroid.vx - 2 * dot * nx;
+                    asteroid.vy = asteroid.vy - 2 * dot * ny;
+                    // Nudge speed slightly and push asteroid out of overlap
+                    asteroid.vx *= 1.05;
+                    asteroid.vy *= 1.05;
+                    asteroid.x = player.x + nx * (shieldR + asteroid.radius + 2);
+                    asteroid.y = player.y + ny * (shieldR + asteroid.radius + 2);
                 }
             }
-            
+        } else {
+            asteroids.forEach(asteroid => {
+                const dx = asteroid.x - player.x;
+                const dy = asteroid.y - player.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < shieldR + asteroid.radius) {
+                    const nx = (dist === 0) ? 1 : dx / dist;
+                    const ny = (dist === 0) ? 0 : dy / dist;
+                    // Reflect asteroid velocity about normal
+                    const dot = asteroid.vx * nx + asteroid.vy * ny;
+                    asteroid.vx = asteroid.vx - 2 * dot * nx;
+                    asteroid.vy = asteroid.vy - 2 * dot * ny;
+                    // Nudge speed slightly and push asteroid out of overlap
+                    asteroid.vx *= 1.05;
+                    asteroid.vy *= 1.05;
+                    asteroid.x = player.x + nx * (shieldR + asteroid.radius + 2);
+                    asteroid.y = player.y + ny * (shieldR + asteroid.radius + 2);
+                }
+            });
+        }
+        if (ENABLE_SPATIAL_GRID && asteroidGrid) {
+            asteroidGrid.buildFrom(asteroids);
+        }
+        // Shield bounce for phased asteroids (only when visible)
+        if (phasedAsteroids && phasedAsteroids.length > 0) {
+            for (let i = 0; i < phasedAsteroids.length; i++) {
+                const pa = phasedAsteroids[i];
+                if (!pa || pa.dead || !pa.visible) continue;
+                const dx = pa.x - player.x;
+                const dy = pa.y - player.y;
+                const dist = Math.hypot(dx, dy);
+                if (dist < shieldR + pa.radius) {
+                    const nx = (dist === 0) ? 1 : dx / dist;
+                    const ny = (dist === 0) ? 0 : dy / dist;
+                    const dot = (pa.vx || 0) * nx + (pa.vy || 0) * ny;
+                    pa.vx = (pa.vx || 0) - 2 * dot * nx;
+                    pa.vy = (pa.vy || 0) - 2 * dot * ny;
+                    pa.vx *= 1.05;
+                    pa.vy *= 1.05;
+                    pa.x = player.x + nx * (shieldR + pa.radius + 2);
+                    pa.y = player.y + ny * (shieldR + pa.radius + 2);
+                }
+            }
+        }
+        // Pop enemy bullets that hit the shield
+        if (enemyBullets && enemyBullets.length > 0) {
+            filterInPlace(enemyBullets, eb => {
+                const dx = eb.x - player.x;
+                const dy = eb.y - player.y;
+                const d = Math.hypot(dx, dy);
+                if (d < shieldR + eb.radius) {
+                    // absorb
+                    return false;
+                }
+                return eb.lifetime > 0;
+            });
+        }
+    }
             // Mines interactions (Level 6)
             if (mines && mines.length > 0) {
                 // Proximity detonation: ONLY player can trigger by proximity (or bullets elsewhere)
@@ -2877,78 +3169,171 @@
                 });
                 
                 // Bounce mines vs asteroids
-                mines.forEach(mine => {
-                    if (mine.exploded) return;
-                    asteroids.forEach(ast => {
-                        const dx = mine.x - ast.x;
-                        const dy = mine.y - ast.y;
-                        const dist = Math.hypot(dx, dy) || 0.0001;
-                        const overlap = mine.radius + ast.radius - dist;
-                        if (overlap > 0) {
-                            const nx = dx / dist;
-                            const ny = dy / dist;
-                            if (level === 6) {
-                                // Treat mine as immovable: only displace and reflect asteroid
-                                ast.x  -= nx * overlap;
-                                ast.y  -= ny * overlap;
-                                const vnAst = ast.vx * nx + ast.vy * ny;
-                                if (vnAst > 0) {
-                                    const bounce = (1 + MINE_BOUNCE_RESTITUTION) * vnAst;
-                                    ast.vx -= bounce * nx;
-                                    ast.vy -= bounce * ny;
-                                }
-                            } else {
-                                // Separate
-                                mine.x += nx * (overlap * 0.6);
-                                mine.y += ny * (overlap * 0.6);
-                                ast.x  -= nx * (overlap * 0.4);
-                                ast.y  -= ny * (overlap * 0.4);
-                                // Velocity along normal (equal mass elastic with restitution)
-                                const vrelx = mine.vx - ast.vx;
-                                const vrely = mine.vy - ast.vy;
-                                const vn = vrelx * nx + vrely * ny;
-                                if (vn < 0) {
-                                    const imp = -(1 + MINE_BOUNCE_RESTITUTION) * vn * 0.5;
-                                    mine.vx += imp * nx;
-                                    mine.vy += imp * ny;
-                                    ast.vx  -= imp * nx;
-                                    ast.vy  -= imp * ny;
-                                }
-                            }
-                        }
-                    });
-                });
-                
-                // Bounce mines vs mines (disabled for Level 6 so mines remain stationary)
-                if (level !== 6) {
-                    for (let i = 0; i < mines.length; i++) {
-                        const a = mines[i];
-                        if (a.exploded) continue;
-                        for (let j = i + 1; j < mines.length; j++) {
-                            const b = mines[j];
-                            if (b.exploded) continue;
-                            const dx = a.x - b.x;
-                            const dy = a.y - b.y;
+                if (ENABLE_SPATIAL_GRID && asteroidGrid) {
+                    for (let mi = 0; mi < mines.length; mi++) {
+                        const mine = mines[mi];
+                        if (mine.exploded) continue;
+                        const candidates = asteroidGrid.queryCircle(mine.x, mine.y, mine.radius + maxAsteroidRadius);
+                        for (let k = 0; k < candidates.length; k++) {
+                            const ast = candidates[k];
+                            const dx = mine.x - ast.x;
+                            const dy = mine.y - ast.y;
                             const dist = Math.hypot(dx, dy) || 0.0001;
-                            const overlap = a.radius + b.radius - dist;
+                            const overlap = mine.radius + ast.radius - dist;
                             if (overlap > 0) {
                                 const nx = dx / dist;
                                 const ny = dy / dist;
-                                // Separate equally
-                                a.x += nx * (overlap * 0.5);
-                                a.y += ny * (overlap * 0.5);
-                                b.x -= nx * (overlap * 0.5);
-                                b.y -= ny * (overlap * 0.5);
-                                // Relative velocity along normal
-                                const vrelx = a.vx - b.vx;
-                                const vrely = a.vy - b.vy;
-                                const vn = vrelx * nx + vrely * ny;
-                                if (vn < 0) {
-                                    const imp = -(1 + MINE_BOUNCE_RESTITUTION) * vn * 0.5;
-                                    a.vx += imp * nx;
-                                    a.vy += imp * ny;
-                                    b.vx -= imp * nx;
-                                    b.vy -= imp * ny;
+                                if (level === 6) {
+                                    // Treat mine as immovable: only displace and reflect asteroid
+                                    ast.x  -= nx * overlap;
+                                    ast.y  -= ny * overlap;
+                                    const vnAst = ast.vx * nx + ast.vy * ny;
+                                    if (vnAst > 0) {
+                                        const bounce = (1 + MINE_BOUNCE_RESTITUTION) * vnAst;
+                                        ast.vx -= bounce * nx;
+                                        ast.vy -= bounce * ny;
+                                    }
+                                } else {
+                                    // Separate
+                                    mine.x += nx * (overlap * 0.6);
+                                    mine.y += ny * (overlap * 0.6);
+                                    ast.x  -= nx * (overlap * 0.4);
+                                    ast.y  -= ny * (overlap * 0.4);
+                                    // Velocity along normal (equal mass elastic with restitution)
+                                    const vrelx = mine.vx - ast.vx;
+                                    const vrely = mine.vy - ast.vy;
+                                    const vn = vrelx * nx + vrely * ny;
+                                    if (vn < 0) {
+                                        const imp = -(1 + MINE_BOUNCE_RESTITUTION) * vn * 0.5;
+                                        mine.vx += imp * nx;
+                                        mine.vy += imp * ny;
+                                        ast.vx  -= imp * nx;
+                                        ast.vy  -= imp * ny;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Rebuild grids after position changes so subsequent queries in this frame are accurate
+                    asteroidGrid.buildFrom(asteroids);
+                    if (mineGrid) {
+                        mineGrid.buildFrom(mines);
+                    }
+                } else {
+                    mines.forEach(mine => {
+                        if (mine.exploded) return;
+                        asteroids.forEach(ast => {
+                            const dx = mine.x - ast.x;
+                            const dy = mine.y - ast.y;
+                            const dist = Math.hypot(dx, dy) || 0.0001;
+                            const overlap = mine.radius + ast.radius - dist;
+                            if (overlap > 0) {
+                                const nx = dx / dist;
+                                const ny = dy / dist;
+                                if (level === 6) {
+                                    // Treat mine as immovable: only displace and reflect asteroid
+                                    ast.x  -= nx * overlap;
+                                    ast.y  -= ny * overlap;
+                                    const vnAst = ast.vx * nx + ast.vy * ny;
+                                    if (vnAst > 0) {
+                                        const bounce = (1 + MINE_BOUNCE_RESTITUTION) * vnAst;
+                                        ast.vx -= bounce * nx;
+                                        ast.vy -= bounce * ny;
+                                    }
+                                } else {
+                                    // Separate
+                                    mine.x += nx * (overlap * 0.6);
+                                    mine.y += ny * (overlap * 0.6);
+                                    ast.x  -= nx * (overlap * 0.4);
+                                    ast.y  -= ny * (overlap * 0.4);
+                                    // Velocity along normal (equal mass elastic with restitution)
+                                    const vrelx = mine.vx - ast.vx;
+                                    const vrely = mine.vy - ast.vy;
+                                    const vn = vrelx * nx + vrely * ny;
+                                    if (vn < 0) {
+                                        const imp = -(1 + MINE_BOUNCE_RESTITUTION) * vn * 0.5;
+                                        mine.vx += imp * nx;
+                                        mine.vy += imp * ny;
+                                        ast.vx  -= imp * nx;
+                                        ast.vy  -= imp * ny;
+                                    }
+                                }
+                            }
+                        });
+                    });
+                }
+                
+                // Bounce mines vs mines (disabled for Level 6 so mines remain stationary)
+                if (level !== 6) {
+                    if (ENABLE_SPATIAL_GRID && mineGrid) {
+                        for (let i = 0; i < mines.length; i++) {
+                            const a = mines[i];
+                            if (a.exploded) continue;
+                            const candidates = mineGrid.queryCircle(a.x, a.y, a.radius + maxMineRadius);
+                            for (let k = 0; k < candidates.length; k++) {
+                                const b = candidates[k];
+                                if (b === a || b.exploded) continue;
+                                const ai = i;
+                                const bi = mines.indexOf(b);
+                                if (bi <= ai) continue;
+                                const dx = a.x - b.x;
+                                const dy = a.y - b.y;
+                                const dist = Math.hypot(dx, dy) || 0.0001;
+                                const overlap = a.radius + b.radius - dist;
+                                if (overlap > 0) {
+                                    const nx = dx / dist;
+                                    const ny = dy / dist;
+                                    // Separate equally
+                                    a.x += nx * (overlap * 0.5);
+                                    a.y += ny * (overlap * 0.5);
+                                    b.x -= nx * (overlap * 0.5);
+                                    b.y -= ny * (overlap * 0.5);
+                                    // Relative velocity along normal
+                                    const vrelx = a.vx - b.vx;
+                                    const vrely = a.vy - b.vy;
+                                    const vn = vrelx * nx + vrely * ny;
+                                    if (vn < 0) {
+                                        const imp = -(1 + MINE_BOUNCE_RESTITUTION) * vn * 0.5;
+                                        a.vx += imp * nx;
+                                        a.vy += imp * ny;
+                                        b.vx -= imp * nx;
+                                        b.vy -= imp * ny;
+                                    }
+                                }
+                            }
+                        }
+                        // Rebuild mine grid after position changes
+                        mineGrid.buildFrom(mines);
+                    } else {
+                        for (let i = 0; i < mines.length; i++) {
+                            const a = mines[i];
+                            if (a.exploded) continue;
+                            for (let j = i + 1; j < mines.length; j++) {
+                                const b = mines[j];
+                                if (b.exploded) continue;
+                                const dx = a.x - b.x;
+                                const dy = a.y - b.y;
+                                const dist = Math.hypot(dx, dy) || 0.0001;
+                                const overlap = a.radius + b.radius - dist;
+                                if (overlap > 0) {
+                                    const nx = dx / dist;
+                                    const ny = dy / dist;
+                                    // Separate equally
+                                    a.x += nx * (overlap * 0.5);
+                                    a.y += ny * (overlap * 0.5);
+                                    b.x -= nx * (overlap * 0.5);
+                                    b.y -= ny * (overlap * 0.5);
+                                    // Relative velocity along normal
+                                    const vrelx = a.vx - b.vx;
+                                    const vrely = a.vy - b.vy;
+                                    const vn = vrelx * nx + vrely * ny;
+                                    if (vn < 0) {
+                                        const imp = -(1 + MINE_BOUNCE_RESTITUTION) * vn * 0.5;
+                                        a.vx += imp * nx;
+                                        a.vy += imp * ny;
+                                        b.vx -= imp * nx;
+                                        b.vy -= imp * ny;
+                                    }
                                 }
                             }
                         }
@@ -2958,15 +3343,40 @@
             
             // Player-asteroid collisions
             if (player.invulnerable === 0 && player.shielded === 0 && player.invisible === 0) {
-                asteroids.forEach(asteroid => {
-                    const dx = player.x - asteroid.x;
-                    const dy = player.y - asteroid.y;
-                    const dist = Math.sqrt(dx * dx + dy * dy);
-                    
-                    if (dist < player.radius + asteroid.radius) {
-                        takePlayerHit();
+                if (ENABLE_SPATIAL_GRID && asteroidGrid) {
+                    const candidates = asteroidGrid.queryCircle(player.x, player.y, player.radius + maxAsteroidRadius);
+                    for (let i = 0; i < candidates.length; i++) {
+                        const asteroid = candidates[i];
+                        const dx = player.x - asteroid.x;
+                        const dy = player.y - asteroid.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < player.radius + asteroid.radius) {
+                            takePlayerHit();
+                        }
                     }
-                });
+                } else {
+                    asteroids.forEach(asteroid => {
+                        const dx = player.x - asteroid.x;
+                        const dy = player.y - asteroid.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        
+                        if (dist < player.radius + asteroid.radius) {
+                            takePlayerHit();
+                        }
+                    });
+                }
+                // Player-phasedAsteroid collisions (only when visible)
+                if (phasedAsteroids && phasedAsteroids.length > 0) {
+                    for (let i = 0; i < phasedAsteroids.length; i++) {
+                        const pa = phasedAsteroids[i];
+                        if (!pa || pa.dead || !pa.visible) continue;
+                        const dx = player.x - pa.x;
+                        const dy = player.y - pa.y;
+                        if (Math.hypot(dx, dy) < player.radius + pa.radius) {
+                            takePlayerHit();
+                        }
+                    }
+                }
                 // Player-boss collisions
                 if (bossActive && boss) {
                     if (boss.collidesWithCircle(player.x, player.y, player.radius)) {
@@ -2975,25 +3385,50 @@
                 }
                 // Player-drone collisions
                 if (drones && drones.length > 0) {
-                    for (let i = 0; i < drones.length; i++) {
-                        const d = drones[i];
-                        if (d.dead) continue;
-                        const dx = player.x - d.x, dy = player.y - d.y;
-                        if (Math.hypot(dx, dy) < player.radius + d.radius) {
-                            // Drones no longer damage the player. They explode and push the player back,
-                            // with a chance to drop a power-up.
-                            createExplosion(d.x, d.y, 80, '#6ff');
-                            applyShockwave(d.x, d.y, 140, MINE_PUSH_STRENGTH);
-                            // Chance to drop a power-up on drone impact
-                            if (canPushPowerup && canPushPowerup()) {
-                                if (Math.random() < 0.3) {
-                                    const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
-                                    const type = types[Math.floor(Math.random() * types.length)];
-                                    pushPowerup(d.x, d.y, type);
+                    if (ENABLE_SPATIAL_GRID && droneGrid) {
+                        const candidates = droneGrid.queryCircle(player.x, player.y, player.radius + maxDroneRadius);
+                        for (let i = 0; i < candidates.length; i++) {
+                            const d = candidates[i];
+                            if (d.dead) continue;
+                            const dx = player.x - d.x, dy = player.y - d.y;
+                            if (Math.hypot(dx, dy) < player.radius + d.radius) {
+                                // Drones no longer damage the player. They explode and push the player back,
+                                // with a chance to drop a power-up.
+                                createExplosion(d.x, d.y, 80, (d.explosionColor || '#6ff'));
+                                applyShockwave(d.x, d.y, 140, MINE_PUSH_STRENGTH);
+                                // Chance to drop a power-up on drone impact
+                                if (canPushPowerup && canPushPowerup()) {
+                                    if (Math.random() < 0.3) {
+                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
+                                        const type = types[Math.floor(Math.random() * types.length)];
+                                        pushPowerup(d.x, d.y, type);
+                                    }
                                 }
+                                d.dead = true;
+                                break;
                             }
-                            d.dead = true;
-                            break;
+                        }
+                    } else {
+                        for (let i = 0; i < drones.length; i++) {
+                            const d = drones[i];
+                            if (d.dead) continue;
+                            const dx = player.x - d.x, dy = player.y - d.y;
+                            if (Math.hypot(dx, dy) < player.radius + d.radius) {
+                                // Drones no longer damage the player. They explode and push the player back,
+                                // with a chance to drop a power-up.
+                                createExplosion(d.x, d.y, 80, (d.explosionColor || '#6ff'));
+                                applyShockwave(d.x, d.y, 140, MINE_PUSH_STRENGTH);
+                                // Chance to drop a power-up on drone impact
+                                if (canPushPowerup && canPushPowerup()) {
+                                    if (Math.random() < 0.3) {
+                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
+                                        const type = types[Math.floor(Math.random() * types.length)];
+                                        pushPowerup(d.x, d.y, type);
+                                    }
+                                }
+                                d.dead = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -3010,52 +3445,128 @@
                         return eb.lifetime > 0;
                     });
                 }
+
+                // Player crossing tether line (Level 14 hazard)
+                if (tetherPairs && tetherPairs.length > 0) {
+                    for (let i = 0; i < tetherPairs.length; i++) {
+                        const tp = tetherPairs[i];
+                        if (!tp || tp.tetherBroken) continue;
+                        if (lineCircleCollision(tp.ax, tp.ay, tp.bx, tp.by, player.x, player.y, player.radius)) {
+                            takePlayerHit();
+                            tp.breakTether();
+                            // Award points at the line midpoint
+                            const mx = (tp.ax + tp.bx) * 0.5;
+                            const my = (tp.ay + tp.by) * 0.5;
+                            awardPoints(TETHER_POINTS_ON_BREAK, mx, my);
+                        }
+                    }
+                }
             }
             
             // Stranded ship - asteroid collisions (levels 2, 6, and 11 objective)
             if ((level === 2 || level === 6 || level === 11) && strandedShip && strandedShip.active) {
-                asteroids.forEach((asteroid, index) => {
-                    const dx = strandedShip.x - asteroid.x;
-                    const dy = strandedShip.y - asteroid.y;
-                    const dist = Math.sqrt(dx * dx + dy * dy);
-                    if (dist < strandedShip.radius + asteroid.radius) {
-                        // Damage ship and destroy asteroid
-                        strandedShip.hit();
-                        const fragments = asteroid.destroy(asteroidDeps());
-                        // Off-screen replacement for fully destroyed small normal
-                        maybeSpawnReplacement(asteroid, fragments);
-                        asteroids.splice(index, 1);
-                        if (fragments) {
-                            asteroids.push(...fragments);
-                        }
-                        // If ship destroyed, end scenario
-                        if (strandedShip.health <= 0) {
-                            strandedShip.active = false;
-                            createExplosion(strandedShip.x, strandedShip.y, strandedShip.radius * 2, '#f66');
-                            gameOver();
+                if (ENABLE_SPATIAL_GRID && asteroidGrid) {
+                    const candidates = asteroidGrid.queryCircle(strandedShip.x, strandedShip.y, strandedShip.radius + maxAsteroidRadius);
+                    for (let i = 0; i < candidates.length; i++) {
+                        const asteroid = candidates[i];
+                        const dx = strandedShip.x - asteroid.x;
+                        const dy = strandedShip.y - asteroid.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < strandedShip.radius + asteroid.radius) {
+                            // Damage ship and destroy asteroid
+                            strandedShip.hit();
+                            const fragments = asteroid.destroy(asteroidDeps());
+                            // Off-screen replacement for fully destroyed small normal
+                            maybeSpawnReplacement(asteroid, fragments);
+                            const asteroidIndex = asteroids.indexOf(asteroid);
+                            if (asteroidIndex !== -1) {
+                                asteroids.splice(asteroidIndex, 1);
+                            }
+                            if (fragments) {
+                                asteroids.push(...fragments);
+                            }
+                            // If ship destroyed, end scenario
+                            if (strandedShip.health <= 0) {
+                                strandedShip.active = false;
+                                createExplosion(strandedShip.x, strandedShip.y, strandedShip.radius * 2, '#f66');
+                                gameOver();
+                            }
+                            // Rebuild grid so subsequent checks see updated asteroids this frame
+                            if (ENABLE_SPATIAL_GRID) {
+                                asteroidGrid.buildFrom(asteroids);
+                            }
                         }
                     }
-                });
+                } else {
+                    asteroids.forEach((asteroid, index) => {
+                        const dx = strandedShip.x - asteroid.x;
+                        const dy = strandedShip.y - asteroid.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < strandedShip.radius + asteroid.radius) {
+                            // Damage ship and destroy asteroid
+                            strandedShip.hit();
+                            const fragments = asteroid.destroy(asteroidDeps());
+                            // Off-screen replacement for fully destroyed small normal
+                            maybeSpawnReplacement(asteroid, fragments);
+                            asteroids.splice(index, 1);
+                            if (fragments) {
+                                asteroids.push(...fragments);
+                            }
+                            // If ship destroyed, end scenario
+                            if (strandedShip.health <= 0) {
+                                strandedShip.active = false;
+                                createExplosion(strandedShip.x, strandedShip.y, strandedShip.radius * 2, '#f66');
+                                gameOver();
+                            }
+                        }
+                    });
+                }
             }
             
             // Particle-asteroid collisions (for rainbow trail)
             particles.forEach(particle => {
                 if (particle.damaging) {
-                    asteroids.forEach((asteroid, index) => {
-                        const dx = particle.x - asteroid.x;
-                        const dy = particle.y - asteroid.y;
-                        const dist = Math.sqrt(dx * dx + dy * dy);
-                        
-                        if (dist < asteroid.radius + 15) {
-                            const newAsteroids = asteroid.destroy(asteroidDeps());
-                            // Off-screen replacement for fully destroyed small normal
-                            maybeSpawnReplacement(asteroid, newAsteroids);
-                            asteroids.splice(index, 1);
-                            if (newAsteroids) {
-                                asteroids.push(...newAsteroids);
+                    if (ENABLE_SPATIAL_GRID && asteroidGrid) {
+                        const candidates = asteroidGrid.queryCircle(particle.x, particle.y, 15 + maxAsteroidRadius);
+                        for (let i = 0; i < candidates.length; i++) {
+                            const asteroid = candidates[i];
+                            const dx = particle.x - asteroid.x;
+                            const dy = particle.y - asteroid.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < asteroid.radius + 15) {
+                                const newAsteroids = asteroid.destroy(asteroidDeps());
+                                // Off-screen replacement for fully destroyed small normal
+                                maybeSpawnReplacement(asteroid, newAsteroids);
+                                const asteroidIndex = asteroids.indexOf(asteroid);
+                                if (asteroidIndex !== -1) {
+                                    asteroids.splice(asteroidIndex, 1);
+                                }
+                                if (newAsteroids) {
+                                    asteroids.push(...newAsteroids);
+                                }
+                                // Rebuild grid so subsequent particles see updated asteroids this frame
+                                if (ENABLE_SPATIAL_GRID) {
+                                    asteroidGrid.buildFrom(asteroids);
+                                }
                             }
                         }
-                    });
+                    } else {
+                        asteroids.forEach((asteroid, index) => {
+                            const dx = particle.x - asteroid.x;
+                            const dy = particle.y - asteroid.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            
+                            if (dist < asteroid.radius + 15) {
+                                const newAsteroids = asteroid.destroy(asteroidDeps());
+                                // Off-screen replacement for fully destroyed small normal
+                                maybeSpawnReplacement(asteroid, newAsteroids);
+                                asteroids.splice(index, 1);
+                                if (newAsteroids) {
+                                    asteroids.push(...newAsteroids);
+                                }
+                            }
+                        });
+                    }
                     // Particle-boss damage (rainbow trail)
                     if (bossActive && boss) {
                         boss.handleParticleDamage(particle);
@@ -3099,10 +3610,11 @@
         // Game state management
         function initGame() {
             score = 0;
-            lives = 3;
+            lives = 30;
             frameCount = 0;
             level = 1;
             asteroids = [];
+            phasedAsteroids = [];
             bullets = [];
             particles = [];
             powerups = [];
@@ -3127,6 +3639,9 @@
             level10Spawned = false;
             level11Spawned = false;
             level12Spawned = false;
+            level13Spawned = false;
+            level14Spawned = false;
+            level15Spawned = false;
             strandedShip = null;
             boss = null;
             bossActive = false;
@@ -3156,7 +3671,7 @@
             player.armor = 0;
             nextArmorScore = 1000;
             // Trigger spawn visual on respawn
-            spawnVisualTimer = 40;
+            spawnVisualTimer = SPAWN_VISUAL_SPAN;
             // Reset upgrade-related state
             hasUpgradedBomb = false;
             hasUpgradedLaser = false;
@@ -3260,10 +3775,10 @@
             initGame();
         }
 
-        // Start directly at a specified level (2-12) from the start screen
+        // Start directly at a specified level (2-15) from the start screen
         function startAtLevel(n) {
             // Clamp to valid range
-            n = Math.max(2, Math.min(12, n|0));
+            n = Math.max(2, Math.min(15, n|0));
             const start = document.getElementById('startScreen');
             if (start) start.classList.add('hidden');
             stopTipRotation();
@@ -3277,15 +3792,23 @@
             if (po) po.classList.add('hidden');
             initGame();
 
-            // Set score/level so normal spawn logic triggers next tick
-            score = (n - 1) * 1000; // lower bound of the level's score range
-            level = n;
+            // Set score to the lower bound of the requested level so that
+            // the normal level transition logic will detect a change and
+            // run the per-level spawn/setup blocks on the next tick.
+            // Do NOT set level here; leave it as initialized by initGame (1),
+            // so that (newLevel !== level) becomes true in the game loop.
+            score = (n - 1) * 1000;
             // Align next armor milestone to next 1000 above current score
             nextArmorScore = score + 1000;
-            levelGlowTimer = 60; // brief pulse to indicate level set
-            // Refresh background preview and stars on menus immediately
-            initBackgroundForLevel(level);
-            initStars();
+            // Ensure no gating flags prevent the immediate transition
+            upgradePending = false;
+            deferUpgradeUntilStrandedGone = false;
+            // Force the game loop to apply the requested level immediately
+            pendingLevel = n;
+            bossDefeatFreeze = 0;
+            // Brief pulse to indicate a level jump intent
+            levelGlowTimer = 60;
+            // UI refresh; background/stars will be updated by level transition
             updateUI();
         }
         
@@ -3377,6 +3900,23 @@
         
         // Main game loop
         function gameLoop() {
+            // Frame pacing tracking and optional logging
+            const perfNow = performance.now();
+            let dtMs = perfNow - lastPerfNow;
+            if (!isFinite(dtMs) || dtMs <= 0) dtMs = 16.67;
+            lastPerfNow = perfNow;
+            const instFPS = 1000 / dtMs;
+            fpsEma = fpsEma * 0.9 + instFPS * 0.1; // smooth
+            if (perfStatsEnabled && fpsEl) fpsEl.textContent = `${Math.round(fpsEma)} FPS`;
+            if (perfStatsEnabled) {
+                perfLogCounter++;
+                if (perfLogCounter >= PERF_LOG_INTERVAL_FRAMES) {
+                    perfLogCounter = 0;
+                    try {
+                        console.log(`[perf] fps_ema=${fpsEma.toFixed(1)} dt=${dtMs.toFixed(2)}ms grid=${ENABLE_SPATIAL_GRID ? 'on' : 'off'}`);
+                    } catch (e) {}
+                }
+            }
             // While paused during gameplay, skip updates and rendering entirely
             if (gameState === 'playing' && paused) {
                 requestAnimationFrame(gameLoop);
@@ -3701,12 +4241,15 @@
                     (score < 8000) ? 8 :
                     (score < 9000) ? 9 :
                     (score < 10000) ? 10 :
-                    (score < 11000) ? 11 : 12;
+                    (score < 11000) ? 11 :
+                    (score < 12000) ? 12 :
+                    (score < 13000) ? 13 :
+                    (score < 14000) ? 14 : 15;
                 // Start upgrade selection when eligible after boss freeze or on natural threshold
                 if (!bossActive && bossDefeatFreeze === 0 && !upgradePending && !deferUpgradeUntilStrandedGone) {
                     if (bossUpgradeQueued) {
                         // Trigger upgrade for queued next level after boss defeat (once)
-                        startUpgradeSelection(Math.min(12, level + 1));
+                        startUpgradeSelection(Math.min(15, level + 1));
                         bossUpgradeQueued = false;
                     } else if (pendingLevel === 0 && targetLevel > level) {
                         // Normal progression by score threshold
@@ -3765,6 +4308,7 @@
                                 ax = Math.random() * canvas.width;
                                 ay = Math.random() * canvas.height;
                             } while (!isSafeLocation(ax, ay));
+                            
                             asteroids.push(new Asteroid(ax, ay, 4, true));
                         }
                     } else if (level === 4 && !level4Spawned) {
@@ -4094,6 +4638,7 @@
                             Powerup,
                             Drone,
                             Mine,
+                            AttackDrone,
                             createExplosion,
                             awardPoints,
                             lineCircleCollision,
@@ -4116,6 +4661,142 @@
                         if (glRenderer) {
                             if (glRenderer.pulseExplosion) glRenderer.pulseExplosion(240, boss.x, boss.y);
                             if (glRenderer.spawnGlow) glRenderer.spawnGlow(boss.x, boss.y, 0xff8899, 60, 0.9);
+                        }
+                    } else if (level === 13 && !level13Spawned && !bossActive) {
+                        // Level 13: Wormhole pair + phased and armored asteroids; no elite spawns
+                        // Clear prior hazards and transient entities
+                        if (asteroids && asteroids.length) asteroids.length = 0;
+                        if (phasedAsteroids && phasedAsteroids.length) phasedAsteroids.length = 0;
+                        if (bullets && bullets.length) bullets.length = 0;
+                        if (wormholes && wormholes.length) wormholes.length = 0;
+                        if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                        if (mines && mines.length) mines.length = 0;
+                        enemyBullets.length = 0;
+                        if (drones && drones.length) drones.length = 0;
+                        if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                        strandedShip = null;
+
+                        // Spawn one safe wormhole pair far apart
+                        wormholes = [];
+                        let ax, ay, bx, by, tries = 0;
+                        do {
+                            ax = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                            ay = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                            tries++;
+                        } while (!isSafeLocation(ax, ay) && tries < 100);
+                        tries = 0;
+                        do {
+                            bx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                            by = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                            tries++;
+                        } while (((Math.hypot(bx - ax, by - ay) < Math.min(canvas.width, canvas.height) * 0.5) || !isSafeLocation(bx, by)) && tries < 200);
+                        wormholes.push(new Wormhole(ax, ay));
+                        wormholes.push(new Wormhole(bx, by));
+
+                        // Seed initial phased asteroids off-screen for flow
+                        for (let i = 0; i < 4; i++) {
+                            spawnPhasedAsteroidOffscreen();
+                        }
+                        // Seed several armored asteroids safely in-field
+                        for (let i = 0; i < 3; i++) {
+                            let sax, say, sTries = 0;
+                            do {
+                                sax = Math.random() * canvas.width;
+                                say = Math.random() * canvas.height;
+                                sTries++;
+                            } while (!isSafeLocation(sax, say) && sTries < 80);
+                            asteroids.push(new Asteroid(sax, say, 4, true));
+                        }
+
+                        // Ensure any leftover tether pairs are cleared when entering Level 13
+                        if (tetherPairs && tetherPairs.length) tetherPairs.length = 0;
+
+                        level13Spawned = true;
+                        levelMessageTimer = 240; // ~4 seconds
+                        levelMessageText = 'Watch out for phased asteroids!';
+                    } else if (level === 14 && !level14Spawned && !bossActive) {
+                        // Level 14: Normal asteroid field reset and buildup
+                        // Clear hazards and transient entities
+                        if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                        if (wormholes && wormholes.length) wormholes.length = 0;
+                        if (mines && mines.length) mines.length = 0;
+                        enemyBullets.length = 0;
+                        if (drones && drones.length) drones.length = 0;
+                        if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                        strandedShip = null;
+                        if (tetherPairs && tetherPairs.length) tetherPairs.length = 0;
+
+                        // Seed baseline of normal asteroids safely in-field
+                        // Note: spawnOffscreenNormalAsteroid() enforces NORMAL_ASTEROID_CAP (5),
+                        // so requesting 6 here can deadlock. Respect the cap and bypass it for initial seeding.
+                        {
+                            const targetNormals = Math.min(6, NORMAL_ASTEROID_CAP);
+                            let safety = 0; // guard against unforeseen conditions
+                            while (countNormalAsteroids() < targetNormals && safety < 20) {
+                                // Bypass cap enforcement for initial seeding to avoid infinite loop
+                                spawnAsteroidOffscreen(3, false, false);
+                                safety++;
+                            }
+                        }
+
+                        // Spawn tether-pair hazards
+                        while (tetherPairs.length < TETHER_PAIR_COUNT) {
+                            tetherPairs.push(new TetherPair(canvas));
+                        }
+
+                        level14Spawned = true;
+                        levelMessageTimer = 240;
+                        levelMessageText = 'Warning: Tethered asteroids are invulnrable!';
+                    } else if (level === 15 && !level15Spawned && !bossActive) {
+                        // Level 15 Boss: Final Asteroid Boss
+                        // Clear all hazards/enemies
+                        if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                        if (wormholes && wormholes.length) wormholes.length = 0;
+                        if (mines && mines.length) mines.length = 0;
+                        if (tetherPairs && tetherPairs.length) tetherPairs.length = 0;
+                        asteroids.length = 0;
+                        bullets.length = 0;
+                        enemyBullets.length = 0;
+                        if (drones && drones.length) drones.length = 0;
+                        if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                        strandedShip = null;
+
+                        boss = new FinalAsteroidBoss({
+                            canvas,
+                            ctx,
+                            player,
+                            bullets,
+                            enemyBullets,
+                            asteroids,
+                            powerups,
+                            drones,
+                            EnemyBullet,
+                            Asteroid,
+                            Powerup,
+                            Drone,
+                            AttackDrone,
+                            createExplosion,
+                            awardPoints,
+                            lineCircleCollision,
+                            showHUDMessage,
+                            applyShockwave,
+                            setShake: (frames, intensity) => {
+                                shakeFrames = Math.max(shakeFrames, frames);
+                                shakeIntensity = Math.max(shakeIntensity, intensity);
+                            },
+                            onPlayerHit: () => { takePlayerHit(); },
+                            getFrameCount: () => frameCount,
+                        });
+                        bossActive = true;
+                        level15Spawned = true;
+                        levelMessageTimer = 300;
+                        levelMessageText = 'SUPER ASTEROID! DESTROY THE SHIELD BATTERIES FIRST';
+                        // Spawn shockwave pushback + brief player invulnerability
+                        applyShockwave(boss.x, boss.y, MINE_SHOCKWAVE_RADIUS, MINE_PUSH_STRENGTH);
+                        player.invulnerable = Math.max(player.invulnerable, 120);
+                        if (glRenderer) {
+                            if (glRenderer.pulseExplosion) glRenderer.pulseExplosion(260, boss.x, boss.y);
+                            if (glRenderer.spawnGlow) glRenderer.spawnGlow(boss.x, boss.y, 0xff5566, 64, 0.95);
                         }
                     }
                 }
@@ -4177,6 +4858,11 @@
                     }
                 }
                 
+                // Update and draw tether pairs (Level 14)
+                if (tetherPairs && tetherPairs.length > 0) {
+                    tetherPairs.forEach(tp => { tp.update(canvas); tp.draw(ctx); });
+                }
+                
                 // Update and draw mines (Level 6)
                 if (mines && mines.length > 0) {
                     mines = mines.filter(m => !m.exploded);
@@ -4213,6 +4899,15 @@
                     });
                 }
                 
+                // Update and draw phased asteroids
+                if (phasedAsteroids && phasedAsteroids.length > 0) {
+                    filterInPlace(phasedAsteroids, pa => {
+                        pa.update(canvas);
+                        pa.draw(ctx);
+                        return !pa.dead;
+                    });
+                }
+                
                 // Boss update/draw
                 if (bossActive && boss) {
                     boss.update();
@@ -4223,19 +4918,19 @@
                         boss = null;
                         bossDefeatFreeze = 120;
                         bossUpgradeQueued = true;
-                        pendingLevel = Math.min(12, level + 1);
+                        pendingLevel = Math.min(15, level + 1);
                         levelMessageTimer = 240;
                         levelMessageText = 'Boss defeated!';
                     }
                 }
 
-                // Update and draw drones (Level 8 boss)
+                // Update and draw drones (Level 8+ minions)
                 if (drones && drones.length > 0) {
-                    filterInPlace(drones, d => {
-                        d.update(player, canvas);
-                        d.draw(ctx);
-                        return !d.dead;
-                    });
+                  filterInPlace(drones, d => {
+                    d.update(player, canvas, enemyBullets, EnemyBullet);
+                    d.draw(ctx);
+                    return !d.dead;
+                  });
                 }
                 
                 // Update and draw friendly clone turrets
@@ -4362,6 +5057,15 @@
                             }
                         }
                     });
+                    // Phased asteroids warp with own cooldown
+                    phasedAsteroids.forEach(pa => {
+                        if (pa.warpCooldown && pa.warpCooldown > 0) pa.warpCooldown--;
+                        if (!pa.warpCooldown || pa.warpCooldown <= 0) {
+                            if (tryWarp(pa, pa.radius)) {
+                                pa.warpCooldown = WORMHOLE_COOLDOWN;
+                            }
+                        }
+                    });
                     // Bullets warp with own cooldown
                     bullets.forEach(b => {
                         if (b.warpCooldown && b.warpCooldown > 0) b.warpCooldown--;
@@ -4447,9 +5151,15 @@
                         spawnOffscreenNormalAsteroid();
                     }
                 }
+                // Level 14: maintain a heavier baseline of normal asteroids
+                if (!bossActive && level === 14 && frameCount % 150 === 0) {
+                    if (countNormalAsteroids() < 6) {
+                        spawnOffscreenNormalAsteroid();
+                    }
+                }
                 
                 // Spawn new asteroids off-screen if all destroyed (disabled during boss)
-                if (!bossActive && asteroids.length === 0) {
+                if (!bossActive && (asteroids.length + phasedAsteroids.length) === 0) {
                     const numAsteroids = Math.min(4 + Math.floor(score / 1000), 8);
                     for (let i = 0; i < numAsteroids; i++) {
                         if (level === 6) {
@@ -4462,6 +5172,13 @@
                                 spawnAsteroidOffscreen(3, false, true);
                             } else {
                                 spawnOffscreenNormalAsteroid();
+                            }
+                        } else if (level === 13) {
+                            // Level 13: normals disabled; refill with phased/armored mix
+                            if (Math.random() < 0.7) {
+                                spawnPhasedAsteroidOffscreen();
+                            } else {
+                                spawnAsteroidOffscreen(4, true, false);
                             }
                         } else if (level === 4 && Math.random() < 0.45) {
                             spawnAsteroidOffscreen(4, true, false);
@@ -4556,6 +5273,9 @@
                 if (paused) {
                     po.classList.remove('hidden');
                     updateWebGLToggleButton();
+                    updateFullscreenScaleButton();
+                    updatePerfToggleButton();
+                    updateRenderScaleButtons();
                     // Initialize keyboard selection for pause overlay
                     initPauseMenuSelection();
                 }
@@ -4571,6 +5291,28 @@
             const btn = document.getElementById('webglToggleBtn');
             if (btn) btn.textContent = 'Visual Filters: ' + (webglEnabled ? 'ON' : 'OFF');
         }
+        function updateFullscreenScaleButton() {
+            const btn = document.getElementById('fullscreenScaleBtn');
+            if (btn) btn.textContent = 'Fullscreen: ' + (fullscreenScaleEnabled ? 'ON' : 'OFF');
+        }
+        window.toggleFullscreenScale = function() {
+            fullscreenScaleEnabled = !fullscreenScaleEnabled;
+            updateFullscreenScaleButton();
+            updateCanvasScale();
+        }
+        // Perf stats (Framerate) toggle controls (Pause menu)
+        function updatePerfToggleButton() {
+            const btn = document.getElementById('perfToggleBtn');
+            if (btn) btn.textContent = 'Framerate: ' + (perfStatsEnabled ? 'ON' : 'OFF');
+            const fps = document.getElementById('fpsOverlay');
+            if (fps) fps.style.display = perfStatsEnabled ? '' : 'none';
+        }
+        window.togglePerfStats = function() {
+            perfStatsEnabled = !perfStatsEnabled;
+            // Reset counter when disabling to avoid immediate log on re-enable
+            if (!perfStatsEnabled) perfLogCounter = 0;
+            updatePerfToggleButton();
+        }
         function enableWebGL() {
             if (glRenderer) { webglEnabled = true; updateWebGLToggleButton(); return; }
             webglEnabled = true;
@@ -4578,6 +5320,7 @@
             // If PIXI not loaded or init failed, revert flag
             if (!glRenderer) webglEnabled = false;
             updateWebGLToggleButton();
+            updateRenderScaleButtons();
         }
         function disableWebGL() {
             webglEnabled = false;
@@ -4585,9 +5328,27 @@
             glRenderer = null;
             window.glRenderer = null;
             updateWebGLToggleButton();
+            updateRenderScaleButtons();
         }
         window.toggleWebGLSetting = function() {
             if (webglEnabled) disableWebGL(); else enableWebGL();
+        }
+        function updateRenderScaleButtons() {
+            const low = document.getElementById('scaleLowBtn');
+            const med = document.getElementById('scaleMedBtn');
+            const high = document.getElementById('scaleHighBtn');
+            if (!low || !med || !high) return;
+            const s = Math.round((webglRenderScale || 1) * 100) / 100;
+            low.textContent = (s === 0.5 ? 'LOW ✓' : 'LOW');
+            med.textContent = (s === 0.75 ? 'MED ✓' : 'MED');
+            high.textContent = (s === 1 ? 'HIGH ✓' : 'HIGH');
+        }
+        window.setRenderScale = function(s) {
+            webglRenderScale = Math.max(0.25, Math.min(1.0, s || 1.0));
+            if (glRenderer && typeof glRenderer.setScale === 'function') {
+                glRenderer.setScale(webglRenderScale);
+            }
+            updateRenderScaleButtons();
         }
         
         // Event listeners

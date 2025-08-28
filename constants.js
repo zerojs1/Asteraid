@@ -6,6 +6,9 @@ export const SHARD_MINION_CAP = 8;
 export const ENABLE_WEBGL = true; // if true, ast.html will initialize a WebGL overlay
 // Choose backend when ENABLE_WEBGL is true: 'pixi' or 'regl'
 export const WEBGL_BACKEND = 'pixi';
+// Render scale for the WebGL overlay. 1.0 = native, 0.5 = half-res (performance).
+// Only affects the overlay (Canvas2D gameplay remains native res).
+export const WEBGL_RENDER_SCALE = 1.0;
 
 // Post-processing (CRT-style) defaults — tunable at build time
 // Scanline/CRT
@@ -62,3 +65,28 @@ export const COMBO_MAX = 0.50;
 // Normal asteroid cap
 // Reduce the previous implicit max (~8 during fresh spawns) by 40% -> 5
 export const NORMAL_ASTEROID_CAP = 5;
+
+// Spatial grid broad-phase (CPU optimization)
+// Toggle to enable broad-phase collision pruning using a uniform grid
+export const ENABLE_SPATIAL_GRID = true;
+// Cell size in pixels; ~radius scale of common objects (64 works well for asteroid radii)
+export const GRID_CELL_SIZE = 64;
+
+// Optional performance stats/logging
+// Toggle to log frame pacing (EMA FPS and last frame dt) at a fixed interval
+export const ENABLE_PERF_STATS = false;
+// Log interval in frames when ENABLE_PERF_STATS is true
+export const PERF_LOG_INTERVAL_FRAMES = 120;
+
+// Sprite caching (Canvas2D CPU optimization)
+// Toggle to enable pre-rendered sprites for bullets, particle dots, and powerup icons
+export const ENABLE_SPRITE_CACHE = true;
+
+// Tether-pair asteroid hazard (Level 14)
+export const TETHER_PAIR_COUNT = 2;           // how many pairs active on Level 14
+export const TETHER_NODE_RADIUS = 30;         // medium-sized nodes
+export const TETHER_PULSE_SPEED = 0.08;       // neon pulse speed
+export const TETHER_LINE_BASE_WIDTH = 2.6;    // base line width
+export const TETHER_SPEED_AFTER_BREAK = 0.6;  // multiply node speed after tether breaks
+export const TETHER_POINTS_ON_BREAK = 40;    // award points when breaking a tether
+export const TETHER_RESPAWN_FRAMES = 540;     // ~9s @60fps before pair respawns

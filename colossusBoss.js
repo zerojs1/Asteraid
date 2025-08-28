@@ -286,6 +286,10 @@ export class ColossusBoss {
         const { getFrameCount } = this.deps;
         if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) return true; // consume bullet, no damage
         pos.ref.hits--;
+        // Micro hit effect for surviving plate
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#f00', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           // Destroy plate
           // Explosion and points
@@ -339,6 +343,9 @@ export class ColossusBoss {
         const { getFrameCount } = this.deps;
         if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) { hit = true; break; }
         pos.ref.hits--;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#f00', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           createExplosion(pos.x, pos.y, 80, '#f00');
           this.maybeDropPowerup(pos.x, pos.y, 0.2);
@@ -368,6 +375,9 @@ export class ColossusBoss {
         if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) { any = true; continue; }
         pos.ref.hits--;
         any = true;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#f00', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           createExplosion(pos.x, pos.y, 80, '#f00');
           this.maybeDropPowerup(pos.x, pos.y, 0.25);

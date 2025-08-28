@@ -61,6 +61,34 @@ export function applyGravityTo(obj, gravityWells, softening, factor = 1) {
 // Create an explosion effect by spawning particles and rings
 // Dependencies are passed explicitly: Particle class and particles array
 export function createExplosion(x, y, radius, color, profile = 'default', ParticleClass, particles) {
+  // 'micro' profile: ultra-lightweight pop for hit feedback
+  if (profile === 'micro') {
+    const count = 6; // very few particles
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 2 + Math.random() * 2;
+      const p = new ParticleClass(
+        x,
+        y,
+        Math.cos(angle) * speed,
+        Math.sin(angle) * speed,
+        color,
+        18
+      );
+      p.glow = 6;
+      particles.push(p);
+    }
+    // Single tiny ring (reduced another 50% in size)
+    const ring = new ParticleClass(x, y, 0, 0, color, 10);
+    ring.shape = 'ring';
+    ring.radius = Math.max(1, radius * 0.1);
+    ring.growth = Math.max(0.3, radius * 0.02);
+    ring.thickness = 1;
+    ring.glow = 8;
+    particles.push(ring);
+    return;
+  }
+
   const count = profile === 'burst' ? 140 : 100;
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
@@ -289,5 +317,67 @@ export function applyShockwave(cx, cy, radius, strength, { player, asteroids, st
       strandedShip.x += nx * 10 * falloff;
       strandedShip.y += ny * 10 * falloff;
     }
+  }
+}
+
+// SpatialGrid: uniform grid for broad-phase circle queries (insertion by circle bounds)
+// Usage:
+//   const grid = new SpatialGrid(cellSize);
+//   grid.buildFrom(asteroids); // objects with x,y,radius
+//   const candidates = grid.queryCircle(x, y, r);
+export class SpatialGrid {
+  constructor(cellSize = 64) {
+    this.s = Math.max(8, Math.floor(cellSize) || 64);
+    this.cells = new Map(); // key: "ix,iy" -> Array of objects
+  }
+
+  clear() { this.cells.clear(); }
+
+  _key(ix, iy) { return ix + ',' + iy; }
+
+  insert(obj) {
+    const r = Math.max(0, obj.radius || 0);
+    const s = this.s;
+    const minX = Math.floor((obj.x - r) / s);
+    const maxX = Math.floor((obj.x + r) / s);
+    const minY = Math.floor((obj.y - r) / s);
+    const maxY = Math.floor((obj.y + r) / s);
+    for (let iy = minY; iy <= maxY; iy++) {
+      for (let ix = minX; ix <= maxX; ix++) {
+        const k = this._key(ix, iy);
+        let bucket = this.cells.get(k);
+        if (!bucket) { bucket = []; this.cells.set(k, bucket); }
+        bucket.push(obj);
+      }
+    }
+  }
+
+  buildFrom(objs) {
+    this.clear();
+    if (!objs || !objs.length) return;
+    for (let i = 0; i < objs.length; i++) this.insert(objs[i]);
+  }
+
+  queryCircle(x, y, r) {
+    const s = this.s;
+    const minX = Math.floor((x - r) / s);
+    const maxX = Math.floor((x + r) / s);
+    const minY = Math.floor((y - r) / s);
+    const maxY = Math.floor((y + r) / s);
+    const results = [];
+    const seen = new WeakSet();
+    for (let iy = minY; iy <= maxY; iy++) {
+      for (let ix = minX; ix <= maxX; ix++) {
+        const bucket = this.cells.get(this._key(ix, iy));
+        if (!bucket) continue;
+        for (let i = 0; i < bucket.length; i++) {
+          const o = bucket[i];
+          if (seen.has(o)) continue;
+          seen.add(o);
+          results.push(o);
+        }
+      }
+    }
+    return results;
   }
 }

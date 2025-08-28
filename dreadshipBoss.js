@@ -203,6 +203,9 @@ export class DreadshipBoss {
       const dx = bullet.x - pos.x, dy = bullet.y - pos.y;
       if (Math.hypot(dx, dy) < pos.radius + bullet.radius) {
         pos.ref.hits--;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#fa3', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           createExplosion && createExplosion(pos.x, pos.y, 70, '#fa3');
           // no points for turret hits (fixed award on defeat)
@@ -233,6 +236,9 @@ export class DreadshipBoss {
       const dx = particle.x - pos.x, dy = particle.y - pos.y;
       if (Math.hypot(dx, dy) < pos.radius + 12) {
         pos.ref.hits--;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#fa3', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           createExplosion && createExplosion(pos.x, pos.y, 70, '#fa3');
           // no points for turret hits (fixed award on defeat)
@@ -257,6 +263,9 @@ export class DreadshipBoss {
       if (lineCircleCollision && lineCircleCollision(x1, y1, x2, y2, pos.x, pos.y, pos.radius)) {
         pos.ref.hits--;
         any = true;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#fa3', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           createExplosion && createExplosion(pos.x, pos.y, 70, '#fa3');
           // no points for turret hits (fixed award on defeat)

@@ -9,7 +9,7 @@
 //   canvas, ctx,
 //   player,
 //   bullets, enemyBullets, asteroids, powerups, drones, mines,
-//   EnemyBullet, Asteroid, Powerup, Drone, Mine,
+//   EnemyBullet, Asteroid, Powerup, Drone, AttackDrone, Mine,
 //   createExplosion, awardPoints, lineCircleCollision,
 //   setShake: (frames, intensity) => void,
 //   onPlayerHit: () => void,
@@ -64,6 +64,7 @@ export class AlienMothershipBoss {
     this.spawnTime = getFrameCount ? getFrameCount() : 0;
     this.droneCooldown = 160; // periodic drone waves
     this.nodeLaserCooldown = 105; // start a charge ~every 1.75s if none active (30% faster than 150)
+    this.attackDroneCooldown = 300; // red AttackDrone every ~5s
 
     // One-time: spawn 3 mines in front of top/mid/bottom nodes
     this.spawnIntroMines();
@@ -96,7 +97,7 @@ export class AlienMothershipBoss {
   }
 
   update() {
-    const { canvas, player, drones, Drone, lineCircleCollision, onPlayerHit, enemyBullets, applyShockwave } = this.deps;
+    const { canvas, player, drones, Drone, AttackDrone, lineCircleCollision, onPlayerHit, enemyBullets, applyShockwave } = this.deps;
 
     // Movement
     if (!this.phase2) {
@@ -183,6 +184,27 @@ export class AlienMothershipBoss {
         d.vx = Math.cos(a) * d.maxSpeed;
         d.vy = Math.sin(a) * d.maxSpeed;
         drones.push(d);
+      }
+    }
+
+    // Periodic AttackDrone spawner (every 5s)
+    if (this.attackDroneCooldown > 0) this.attackDroneCooldown--;
+    if (this.attackDroneCooldown === 0 && drones && AttackDrone) {
+      // Enforce global cap of 5 alive AttackDrones
+      const aliveAttack = drones ? drones.filter(d => (d instanceof AttackDrone) && !d.dead).length : 0;
+      if (aliveAttack >= 5) {
+        this.attackDroneCooldown = 60; // retry sooner when capped
+      } else {
+      const baseAng = Math.atan2(player.y - this.y, player.x - this.x);
+      const a = baseAng + (Math.random() - 0.5) * 0.2;
+      const sx = this.x - this.coreRadius - 16 + Math.cos(a) * 10;
+      const sy = this.y + Math.sin(a) * 18;
+      const ad = new AttackDrone(sx, sy);
+      const sp = ad.maxSpeed * 1.25;
+      ad.vx = Math.cos(a) * sp;
+      ad.vy = Math.sin(a) * sp;
+      drones.push(ad);
+      this.attackDroneCooldown = 300;
       }
     }
 
@@ -445,6 +467,9 @@ export class AlienMothershipBoss {
         const { getFrameCount } = this.deps;
         if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) return true; // consume bullet, no damage
         pos.ref.hits--; pos.ref.hitFlash = 8;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#f66', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           createExplosion(pos.x, pos.y, 70, '#f88');
           // stop any ongoing charge/fire on destroyed node
@@ -490,6 +515,9 @@ export class AlienMothershipBoss {
         const { getFrameCount } = this.deps;
         if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) { hit = true; break; }
         pos.ref.hits--; pos.ref.hitFlash = 8;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#f66', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           createExplosion(pos.x, pos.y, 70, '#f88');
           pos.ref.chargeTimer = 0; pos.ref.fireTimer = 0;
@@ -522,6 +550,9 @@ export class AlienMothershipBoss {
         any = true;
         if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) { continue; }
         pos.ref.hits--; pos.ref.hitFlash = 8; any = true;
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 3, '#f66', 'micro');
+        }
         if (pos.ref.hits <= 0) {
           createExplosion(pos.x, pos.y, 70, '#f88');
           pos.ref.chargeTimer = 0; pos.ref.fireTimer = 0;
