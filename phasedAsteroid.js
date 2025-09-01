@@ -32,6 +32,19 @@ export class PhasedAsteroid {
     this.warpCooldown = 0;
 
     this.dead = false;
+
+    // Precompute vertices once and cache a sprite (baked glow/outline) for fast drawing
+    this.vertices = [];
+    const nVerts = 10;
+    for (let i = 0; i < nVerts; i++) {
+      const ang = (i / nVerts) * Math.PI * 2;
+      // Fixed random variance per instance to keep a unique shape without per-frame randomness
+      const variance = 0.85 + Math.random() * 0.3;
+      this.vertices.push({ angle: ang, radius: this.radius * variance });
+    }
+    this.path = this.buildPath(this.vertices, 1);
+    this.pathTrail = this.buildPath(this.vertices, 0.95);
+    this.createSprite();
   }
 
   _resetPhaseTimer() {
@@ -83,8 +96,8 @@ export class PhasedAsteroid {
   draw(ctx) {
     if (this.dead) return;
 
-    // Draw trail
-    if (this.trail && this.trail.length) {
+    // Draw trail using cached sprite
+    if (this.trail && this.trail.length && this.spriteCanvas) {
       for (let i = 0; i < this.trail.length; i++) {
         const t = this.trail[i];
         const a = t.alpha;
@@ -94,36 +107,95 @@ export class PhasedAsteroid {
         ctx.translate(t.x, t.y);
         ctx.rotate(t.rot);
         ctx.scale(0.95, 0.95);
-        this._strokeShape(ctx, '#c0f');
+        ctx.drawImage(this.spriteCanvas, -this.spriteHalfW, -this.spriteHalfH, this.spriteW, this.spriteH);
         ctx.restore();
       }
     }
 
     if (!this.visible) {
-      // Optional subtle shimmer to hint presence
+      // Ghost state: draw faint sprite as a hint (no re-stroking)
       ctx.save();
       ctx.globalAlpha = 0.15;
       ctx.translate(this.x, this.y);
       ctx.rotate(this.rotation);
-      this._strokeShape(ctx, '#c0f');
+      if (this.spriteCanvas) {
+        ctx.drawImage(this.spriteCanvas, -this.spriteHalfW, -this.spriteHalfH, this.spriteW, this.spriteH);
+      }
       ctx.restore();
       ctx.globalAlpha = 1;
       return;
     }
 
-    // Visible state: bright purple
+    // Visible state: draw cached sprite (bright purple baked-in)
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.rotation);
-    this._strokeShape(ctx, '#d0f');
+    if (this.spriteCanvas) {
+      ctx.drawImage(this.spriteCanvas, -this.spriteHalfW, -this.spriteHalfH, this.spriteW, this.spriteH);
+    }
     ctx.restore();
     ctx.globalAlpha = 1;
     ctx.shadowBlur = 0;
   }
 
+  buildPath(vertices, scale) {
+    const p = new Path2D();
+    for (let j = 0; j < vertices.length; j++) {
+      const vertex = vertices[j];
+      const x = Math.cos(vertex.angle) * vertex.radius * scale;
+      const y = Math.sin(vertex.angle) * vertex.radius * scale;
+      if (j === 0) p.moveTo(x, y); else p.lineTo(x, y);
+    }
+    p.closePath();
+    return p;
+  }
+
+  createSprite() {
+    // Pre-render sprite with baked glow and outline for performance
+    const color = '#d0f';
+    const margin = 24;
+    const viewW = this.radius * 2 + margin * 2;
+    const viewH = this.radius * 2 + margin * 2;
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+
+    this.spriteCanvas = (typeof document !== 'undefined' && document.createElement)
+      ? document.createElement('canvas')
+      : undefined;
+    if (!this.spriteCanvas) {
+      this.spriteW = viewW; this.spriteH = viewH; this.spriteHalfW = viewW / 2; this.spriteHalfH = viewH / 2;
+      return;
+    }
+
+    this.spriteCanvas.width = Math.ceil(viewW * dpr);
+    this.spriteCanvas.height = Math.ceil(viewH * dpr);
+    this.spriteW = viewW;
+    this.spriteH = viewH;
+    this.spriteHalfW = viewW / 2;
+    this.spriteHalfH = viewH / 2;
+
+    const sctx = this.spriteCanvas.getContext('2d');
+    if (!sctx) return;
+    sctx.save();
+    sctx.scale(dpr, dpr);
+    sctx.translate(this.spriteHalfW, this.spriteHalfH);
+
+    // Bake four-pass glow/outline (outer to inner). Use prebuilt paths.
+    for (let i = 3; i >= 0; i--) {
+      sctx.strokeStyle = color;
+      sctx.lineWidth = i === 0 ? 2 : 1;
+      sctx.globalAlpha = i === 0 ? 1 : 0.3;
+      sctx.shadowBlur = 20 - i * 5;
+      sctx.shadowColor = color;
+      sctx.stroke(this.path);
+    }
+
+    sctx.restore();
+    sctx.shadowBlur = 0;
+    sctx.globalAlpha = 1;
+  }
+
   _strokeShape(ctx, color) {
-    // Irregular 10-gon outline
-    const r = this.radius;
+    // Fallback stroking using precomputed vertices (not used in normal flow after sprite caching)
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     for (let i = 3; i >= 0; i--) {
@@ -131,13 +203,11 @@ export class PhasedAsteroid {
       ctx.shadowBlur = 20 - i * 5;
       ctx.shadowColor = color;
       ctx.beginPath();
-      const n = 10;
-      for (let j = 0; j < n; j++) {
-        const ang = (j / n) * Math.PI * 2;
-        const variance = 0.85 + Math.random() * 0.3; // subtle wobble
-        const x = Math.cos(ang) * r * variance;
-        const y = Math.sin(ang) * r * variance;
-        if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      const verts = this.vertices;
+      for (let j = 0; j < verts.length; j++) {
+        const vx = Math.cos(verts[j].angle) * verts[j].radius;
+        const vy = Math.sin(verts[j].angle) * verts[j].radius;
+        if (j === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
       }
       ctx.closePath();
       ctx.stroke();
@@ -150,11 +220,9 @@ export class PhasedAsteroid {
     const { createExplosion } = deps || {};
     const ix = (typeof impactX === 'number') ? impactX : this.x;
     const iy = (typeof impactY === 'number') ? impactY : this.y;
-    // One-time pop on first successful visible hit (fixed 16px)
-    if (!this._firstHitShown && createExplosion) {
-              // Fixed 16px radius using lightweight 'micro' profile
-              createExplosion(ix, iy, 3, '#c0f', 'micro');
-      this._firstHitShown = true;
+    // Micro hit pop every time for feedback
+    if (createExplosion) {
+      createExplosion(ix, iy, 3, '#c0f', 'micro');
     }
     this.hits--;
     if (this.hits <= 0) {
@@ -166,12 +234,16 @@ export class PhasedAsteroid {
 
   destroy(deps) {
     if (this.dead) return;
-    const { createExplosion, awardPoints, applyShockwave } = deps || {};
+    const { createExplosion, awardPoints, applyShockwave, onDestroyed } = deps || {};
     // Purple shockwave + small shards
     if (createExplosion) createExplosion(this.x, this.y, this.radius * 1.1, '#c0f');
     // Knockback using mine shockwave tuning passed by caller
     if (applyShockwave) applyShockwave(this.x, this.y);
     if (awardPoints) awardPoints(60, this.x, this.y, true);
+    // Award EXP for defeating a phased asteroid (classic mode gating handled inside addEXP)
+    if (deps && typeof deps.addEXP === 'function') deps.addEXP(12, 'phased');
+    // Allow caller to react (e.g., level 13 replacement spawn)
+    if (typeof onDestroyed === 'function') onDestroyed(this);
     this.dead = true;
   }
 }

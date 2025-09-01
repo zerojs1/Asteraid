@@ -87,11 +87,22 @@ export class Particle {
       this.y += this.vy;
       this.vx *= 0.98;
       this.vy *= 0.98;
-      // Wrap around screen for moving particles
-      if (this.x < 0) this.x = canvas.width;
-      if (this.x > canvas.width) this.x = 0;
-      if (this.y < 0) this.y = canvas.height;
-      if (this.y > canvas.height) this.y = 0;
+      // Wrap around screen for moving particles (can be disabled for performance)
+      if (!this.noWrap) {
+        if (this.x < 0) this.x = canvas.width;
+        if (this.x > canvas.width) this.x = 0;
+        if (this.y < 0) this.y = canvas.height;
+        if (this.y > canvas.height) this.y = 0;
+      } else {
+        // Cheap offscreen cull when wrapping is disabled
+        const m = 20; // small margin so fade-out rings still render near edges
+        if (
+          this.x < -m || this.x > (canvas ? canvas.width + m : 0) ||
+          this.y < -m || this.y > (canvas ? canvas.height + m : 0)
+        ) {
+          this.lifetime = 0;
+        }
+      }
     }
     this.rotation += this.angularVel;
   }

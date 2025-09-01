@@ -2,6 +2,139 @@
 
 - **Initialization**: The overlay is created in `ast.html` if `ENABLE_WEBGL` and `WEBGL_BACKEND === 'pixi'`. It mirrors the base canvas to a texture and composites with post-processing filters (FXAA, bloom, RGB split, CRT, zoom blur, vignette, noise, bulge/pinch lens) plus an additive glow layer.
 
+- ## EXP & Rewards System (Implemented)
+
+This section documents the implemented player progression system: EXP accumulation across runs, permanent rewards, UI feedback, and persistence. All features listed here are live in `ast.html`.
+
+### Core State
+- __Variables__: `playerExp`, `currentPlayerLevel`, `expGainedThisGame`, `unlockedRewards` (`Set`)
+- __Functions__: `addEXP(amount, source)`, `awardComboBonusExp()`, `awardStrandedShipBonus()`, `drawEXPDisplay(ctx, x, y)`, `getNextRewardPreview()`, `applyPermanentRewards()`, `saveExpPersistence()`, `loadExpPersistence()`
+- __Gating__: All EXP/rewards are disabled when `gameMode === 'gauntlet'`.
+
+### EXP Sources (Classic mode)
+- __Asteroids__: EXP is awarded through the `awardPoints` wrapper in `ast.html`, mapping base score awards to EXP. Phased asteroid also awards EXP via its dependency `deps.addEXP(12)` in `phasedAsteroid.js`.
+- __Boss defeats__:
+  - Colossus (L4): 100 EXP
+  - Dreadship (L8): 150 EXP
+  - Crystal Titan (L10): 200 EXP
+  - Alien Mothership (L12): 250 EXP
+  - Final Asteroid Boss (L15): 400 EXP
+- __Score milestones__: Every 1000 score threshold crossed grants +20 EXP, capped at 12000 points total.
+- __Combo bonus at Game Over__: `awardComboBonusExp()` grants 1 EXP per point of the max combo bonus total achieved this run.
+- __Special event__: Saving the stranded ship to evacuation awards +20 EXP (once per event).
+
+### Levels & Thresholds
+Level is computed from total EXP using `EXP_LEVELS`:
+- L1: 0
+- L2: 200
+- L3: 400
+- L4: 700
+- L5: 1100
+- L6: 1600
+- L7: 2200
+- L8: 2900
+- L9: 3700
+- L10: 4600
+- L11: 5600
+- L12: 6700
+- L13: 7900
+- L14: 9200
+- L15: 10600
+- L16: 12100
+- L17: 13700
+- L18: 15400
+- L19: 17200
+- L20: 19100
+- L21: 21100
+- L22: 23200
+- L23: 25400
+- L24: 27700
+- L25: 30100
+
+### Permanent Rewards (Unlocked by Level)
+Applied at classic game initialization via `applyPermanentRewards()`:
+- __L2__: `maxArmor+1` — Start with 1 armor; raises max armor by +1.
+- __L3__: `speed+5%` — `player.maxSpeed` × 1.05.
+- __L4__: `life+1` — Start with 4 lives.
+- __L5__: `drop+10%` — Power-up drop rate multiplier × 1.10.
+- __L6__: `bulletRange+10%` — Bullet lifetime/range multiplier × 1.10.
+- __L7__: `shield+1sec` — +60 frames shield duration bonus.
+- __L8__: `laser+1` — +1 laser charge per pickup.
+- __L9__: `bomb+1` — +1 bomb charge per pickup.
+- __L10__: `eliteKit` — Additional +10% speed, +1 max armor, +10% drop rate (stacks with earlier rewards).
+- __L11__: `skin_cobalt` — Cosmetic ship skin; ship outline/glow shifts to cobalt blue.
+- __L12__: `trail_neonPurple` — Cosmetic trail; afterimage trail glows neon purple.
+- __L13__: `skin_emerald` — Cosmetic ship skin; ship outline/glow shifts to emerald.
+- __L14__: `trail_sunset` — Cosmetic trail; afterimage trail glows sunset peach.
+- __L15__: `skin_vaporwave` — Cosmetic ship skin; ship outline/glow shifts to vaporwave pink.
+- __L16__: `trail_iceBlue` — Pale cyan trail.
+- __L17__: `skin_crimson` — Deep red ship.
+- __L18__: `trail_stardust` — Pale starlight trail with a subtle pulse.
+- __L19__: `skin_gold` — Warm gold ship, slightly stronger glow.
+- __L20__: `trail_mint` — Fresh mint-green trail.
+- __L21__: `skin_midnight` — Dark blue ship, slightly stronger glow for readability.
+- __L22__: `trail_plasma` — Vibrant magenta trail, a bit thicker line.
+- __L23__: `skin_arctic` — Frosty white-blue ship.
+- __L24__: `trail_ember` — Warm ember orange trail.
+- __L25__: `skin_aurora` — Subtle hue-cycling ship color.
+
+#### Cosmetic Visuals & Selection
+- __Unlocks__: Cosmetics are visual‑only rewards starting post‑L10.
+- __Application__: On game init, `applyPermanentRewards()` sets `window.activeTrailId` and `window.activeSkinId` from `unlockedRewards`.
+  - Trail priority: prefers higher tier overall (e.g., L24 `trail_ember` > L22 `trail_plasma` > L20 `trail_mint` > L18 `trail_stardust` > L16 `trail_iceBlue` > L14 `trail_sunset` > L12 `trail_neonPurple`).
+  - Skin priority: prefers higher tier overall (e.g., L25 `skin_aurora` > L23 `skin_arctic` > L21 `skin_midnight` > L19 `skin_gold` > L17 `skin_crimson` > L15 `skin_vaporwave` > L13 `skin_emerald` > L11 `skin_cobalt`).
+- __Rendering__:
+  - Trail colors: `trail_neonPurple` → `#b66bff`, `trail_sunset` → `#ff9a9e`, `trail_iceBlue` → `#9fe3ff`, `trail_stardust` → soft pulsing pale blue-white, `trail_mint` → `#6fffc1`, `trail_plasma` → `#ff4fd6` (slightly thicker), `trail_ember` → `#ff8a2b`.
+  - Skin colors: `skin_cobalt` → `#3ea0ff`, `skin_emerald` → `#3ef08a`, `skin_vaporwave` → `#ff71ce`, `skin_crimson` → `#ff3b3b`, `skin_gold` → `#ffcf3e` (+glow), `skin_midnight` → `#1e2a78` (+glow), `skin_arctic` → `#dff6ff`, `skin_aurora` → slow hue cycle.
+  - Other states (rainbow, invisibility, invulnerability flashes) continue to overlay/affect visuals as before.
+
+### Sound effects ###
+Created https://www.bfxr.net/
+exported as .wav
+
+
+### UI Integration
+- __Start screen (`#startScreen`)__:
+  - `#playerLevelStart`: shows current player level.
+  - `#nextRewardPreviewStart`: shows `getNextRewardPreview()` string.
+  - Populated in `initMenuInfo()` and refreshed whenever returning to start.
+- __HUD (gameplay)__:
+  - `drawEXPDisplay(ctx, 20, 44)` renders "LVL N – EXP: X", a progress bar to next level, and a subtle next‑reward line using `getNextRewardPreview()`.
+  - Level-up and EXP event messages are surfaced via `showHUDMessage()` calls in `addEXP()` and award helpers.
+- __Game Over__:
+  - `awardComboBonusExp()` is invoked, then `saveExpPersistence()`.
+  - `#lastGameExp` shows "+N EXP" gained this run.
+
+### Persistence
+- __Keys__: `asteraidPlayerExp`, `asteraidPlayerLevel`, `asteraidUnlockedRewards`, `asteraidLastGameExp` (localStorage).
+- __Load__: `loadExpPersistence()` at menu init.
+- __Save__: `saveExpPersistence()` on classic game over.
+- __Application__: `applyPermanentRewards()` during `initGame()` (classic only) resets base stats and applies unlocked rewards.
+
+### Integration Points (Code)
+- `ast.html`: EXP state, helpers, persistence, UI wiring, HUD draw call.
+- Boss modules (`colossusBoss.js`, `dreadshipBoss.js`, `crystalTitanBoss.js`, `alienMothershipBoss.js`, `finalAsteroidBoss.js`): award EXP on `onDefeated()` via injected `addEXP`.
+- `phasedAsteroid.js`: awards fixed EXP on destroy via `deps.addEXP(...)`.
+- `awardPoints` in `ast.html`: maps score events to EXP and also triggers milestone EXP.
+
+### Balancing & Tuning Knobs
+- Per‑source EXP amounts, milestone amount/cap, reward multipliers, and EXP thresholds are centralized in `ast.html` constants/tables for straightforward tuning.
+
+### Current Behavior Summary
+- Classic runs accumulate EXP and unlock rewards; Gauntlet mode is excluded from EXP, UI, and reward application.
+- Start screen shows current level and next reward; gameplay HUD shows level, bar, and next reward; Game Over shows EXP gained.
+- Rewards affect only starting stats of new classic runs via `applyPermanentRewards()`.
+
+---
+
+
+---
+
+## Player Benefits
+- __Motivation__: Progress continues across runs.
+- __Replayability__: Starting bonuses make subsequent runs fresh and rewarding.
+- __Arcade spirit retained__: System is simple, legible, and non‑intrusive.
+
 - **Core object**: `window.glRenderer` exposes runtime controls:
   - `update(state)`: Syncs size, refreshes source texture, decays pulses, drives the bulge lens for shield refraction when `state.shielded` is true, composites feedback/source/glow, fades glow items, and renders.
   - `setLaunchBlur(amount)` (0..~1.2): Adjusts zoom blur (or bloom fallback) used in the boot/start launch sequence.
@@ -833,6 +966,100 @@ test local server here: py -m http.server 5500
 - **Power-up Dimension Shift**
   - Power-ups occasionally "phase" in/out of reality with a brief dimensional shift effect before stabilizing.
   - Implementation: Periodic visual glitch where power-up temporarily splits into RGB components with slight offset, then recombines.
+
+### Gauntlet Game Mode (Endless)
+
+- **Overview**: Endless, procedurally generated survival. No discrete levels; waves flow continuously with rising difficulty. At fixed score/time intervals, present roguelite-style upgrades so the player scales with the challenge.
+
+- **Core Loop**:
+  - Spawn a wave using the current difficulty tier.
+  - Maintain a light background trickle between waves to avoid downtime.
+  - Advance to the next wave on clear or a wave timer (no hard reset of the field).
+  - Every N score or M seconds, pause and show 2–3 upgrade choices; resume after selection.
+
+- **Difficulty Scaling**:
+  - Global scalar D(t, score) grows with minutes survived and score: D = base + a·minutes + b·(score/1000).
+  - Apply D to: spawn counts, armored chance, elite chance, asteroid speed, size bias, split bias, hazard frequency (wells, mines, wormholes).
+  - Enforce caps for readability/perf: simultaneous asteroids, hazards, particles.
+
+- **Spawning System**:
+  - Track `gauntletTier` (int) and `gauntletHeat` (float). Heat rises with time/kills and decays slowly.
+  - Wave budget B = f(tier, heat). Spend B on units chosen from weighted tables per archetype.
+  - Safe spawns: reuse `isSafeLocation()` and offscreen bias; keep a min distance from the player.
+  - Background trickle: every 120–220 frames spawn 1–2 small/medium normals with low probability, scaled by D.
+
+- **Wave Archetypes** (weighted rotation, all scaled by D):
+  - Normal Mix: 60% medium, 30% large, 10% armored; standard speeds; normal splits.
+  - Armored Surge: high armored ratio (up to ~45% at high D); fewer units, tankier.
+  - Speed Demons: small/medium only, higher velocity, lower split chance.
+  - Elite Pressure: 1–3 Elite asteroids (green, +20% size, tougher, no split, on‑death shock damaging player only), with small escorts.
+  - Belt Pulse: dense crossing band; lower HP per rock; combo-friendly.
+  - Hazard Blend: mines (pushback only) and gravity wells with a standard mix; bullets curve subtly.
+  - Wormhole Chaos: one or two wormhole pairs; recycled paths create emergent routes.
+  - Mini-Boss Cameo (optional): a simplified mini-threat (e.g., micro-dreadship) that clears on defeat and drops a power-up.
+
+- **Upgrade Intervals**:
+  - Trigger: every 1500 score or every 90 seconds (debounced to once per window).
+  - Sample picks: Armor +1 (cap 6) | Engine +20% | Bullet range +25% | Power-up drop +25% | Charged shot size +25% | Bullet damage +15% | Fire rate +10% | Magnet pickup +30% | Combo window +10% | Rainbow duration +20%.
+  - Flow: enter existing `upgrade` state, pause spawns/updates, on selection resume and `gauntletTier++`.
+
+- **Scoring & Hi-Score**:
+  - Keep existing scoring. Add `asteraidHiScoreGauntlet` for this mode.
+  - Show "Time Survived" and "Tier Reached" on Game Over.
+
+- **HUD & UI**:
+  - Replace level label with `GAUNTLET TIER N`.
+  - Optional heat bar under SCORE.
+  - Upgrade overlay title: `GAUNTLET UPGRADE`.
+
+- **Integration Notes (`ast.html`)**:
+  - Add `gameMode = 'classic' | 'gauntlet'` and route spawners.
+  - Init: set `gauntletTier=1`, `gauntletHeat=0`, reset cadence timers.
+  - Timers: `nextWaveAtFrame`, `nextTrickleAtFrame`, `nextUpgradeAtScore`, `nextUpgradeAtTime`.
+  - Spawners: `spawnGauntletWave(tier, heat)` (returns specs), `spawnTrickle()`.
+  - Scaling helpers: `gauntletDifficulty(now, score)` and `applyDifficultyTo(specs, D)`.
+  - Persistence: separate gauntlet hi-score key; do not overwrite classic hi-score.
+
+- **Balancing**:
+  - Early tiers: slower, readable; 1–2 minutes of onboarding.
+  - Mid tiers: add armored/elite and hazards; limit hazards (≤2 wells, ≤6 mines).
+  - Late tiers: ramp speed more than HP; raise elite frequency; cap counts for perf.
+
+- **Optional Events**:
+  - Score Blitz: 15s period of higher spawn intensity with bonus points.
+  - Power Surge: increased power-up drops for 20s, then cooldown.
+
+#### Wave Budget Example (pseudo)
+
+```js
+// D grows with time and score; clamp as needed
+const D = base + timeMinutes * 0.6 + (score / 2000);
+const baseBudget = 6 + Math.floor(D * 2);
+const armoredWeight = clamp01(0.1 + D * 0.06);
+const eliteWeight = clamp01(0.02 + D * 0.03);
+
+let budget = baseBudget;
+while (budget > 0 && asteroids.length < MAX_FIELD_ASTEROIDS) {
+  const roll = rng();
+  let pick;
+  if (roll < eliteWeight) pick = 'elite';
+  else if (roll < eliteWeight + armoredWeight) pick = 'armored';
+  else pick = rng() < 0.5 ? 'medium' : 'large';
+
+  const spec = makeAsteroidSpec(pick, D);
+  spawnAsteroidSpec(spec);
+  budget -= spec.cost; // small:1, medium:2, large:3, armored:4, elite:5
+}
+```
+
+#### Minimal Task List
+
+- Add game mode flag and menu option for Gauntlet start.
+- Implement timers and difficulty helpers.
+- Implement `spawnGauntletWave()` + `spawnTrickle()` using existing safe spawn utilities.
+- Hook upgrade interval into existing upgrade UI; add a separate hi-score key.
+- Adjust HUD labels and add optional heat bar.
+- Playtest and tune weights, caps, and intervals.
 
 - **Bullet Impact Splash**
   - When bullets hit asteroids, a brief energy splash radiates from the impact point before the asteroid splits.

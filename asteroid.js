@@ -345,8 +345,12 @@ export class Asteroid {
   dropPowerup(pushPowerup) {
     if (!pushPowerup) return;
 
-    const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
-    const weights = this.armored ? [1, 1, 1, 1, 1, 1, 1, 1] : [20, 30, 20, 20, 15, 10, 10, 10];
+    const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'armor'];
+    // For armored asteroids, keep uniform low odds across all types.
+    // For normal asteroids, give armor a similar rarity to laser/clone.
+    const weights = this.armored
+      ? [1, 1, 1, 1, 1, 1, 1, 1, 1]
+      : [20, 30, 20, 20, 15, 10, 10, 10, 10];
 
     const totalWeight = weights.reduce((a, b) => a + b, 0);
     let random = Math.random() * totalWeight;

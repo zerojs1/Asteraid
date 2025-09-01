@@ -50,7 +50,8 @@ export class Powerup {
       invisible: { color: '#f0f', icon: 'I' },
       laser: { color: '#f09', icon: 'L' },
       clone: { color: '#6ff', icon: 'C' },
-      life: { color: '#fff', icon: '1' }
+      life: { color: '#fff', icon: '1' },
+      armor: { color: '#0ff', icon: 'A' }
     };
 
     this.color = config[type].color;

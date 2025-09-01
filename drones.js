@@ -132,3 +132,50 @@ export class CloneDrone {
     ctx.restore();
   }
 }
+
+// CrystalDrone: hunts the player; on collision it should freeze the player via boss logic.
+// Visuals: filled white, thin needle-like triangle with strong glow. Identified by isCrystal flag.
+export class CrystalDrone {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.vx = 0; this.vy = 0;
+    this.radius = 12;
+    this.dead = false;
+    this.maxSpeed = 2.2; // match base drone speed
+    this.turnRate = 0.06;
+    this.isCrystal = true;
+    this.explosionColor = '#fff';
+  }
+  update(player, canvas) {
+    if (this.dead) return;
+    const angTo = Math.atan2(player.y - this.y, player.x - this.x);
+    const cur = Math.atan2(this.vy, this.vx);
+    let diff = Math.atan2(Math.sin(angTo - cur), Math.cos(angTo - cur));
+    diff = Math.max(-this.turnRate, Math.min(this.turnRate, diff));
+    const speed = Math.min(this.maxSpeed, Math.hypot(this.vx, this.vy) + 0.15);
+    const newAng = cur + diff;
+    this.vx = Math.cos(newAng) * speed;
+    this.vy = Math.sin(newAng) * speed;
+    this.x += this.vx; this.y += this.vy;
+    if (this.x < -40 || this.x > canvas.width + 40 || this.y < -40 || this.y > canvas.height + 40) this.dead = true;
+  }
+  draw(ctx) {
+    if (this.dead) return;
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    const ang = Math.atan2(this.vy, this.vx);
+    ctx.rotate(ang);
+    // Needle-like white filled triangle
+    ctx.shadowBlur = 14; ctx.shadowColor = '#ffffff';
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    // Long, thin needle: narrow base, long tip
+    ctx.moveTo(18, 0);     // tip forward
+    ctx.lineTo(-12, -3.5); // upper back (thin)
+    ctx.lineTo(-12, 3.5);  // lower back (thin)
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+}

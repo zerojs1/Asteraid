@@ -1,47 +1,48 @@
-// Asteraid Attract/Demo Mode
-// Level 1 autoplay: ship vs asteroids on starfield. Powerups drop and are auto-used.
-// Self-contained: uses its own local arrays and dummy player so it won't disturb gameplay state.
+// Asteraid Attract Mode (Start Screen)
+// Cosmetic flyby rendering; no gameplay (collisions/AI/bullets/powerups/explosions).
+// Optional lightweight ambient asteroids (visual-only) can be shown behind the flyby.
 
-import { Bullet } from './bullets.js';
 import { Asteroid } from './asteroid.js';
-import { Powerup } from './powerups.js';
 import { Particle } from './particle.js';
 
 export class AttractMode {
-  constructor({ canvas, ctx }) {
+  constructor({ canvas, ctx, tracer, accents, cosmeticsResolver } = {}) {
     this.canvas = canvas;
     this.ctx = ctx;
     this.isActive = false;
     this.frame = 0;
-    // Level 1 pacing
-    this.targetAsteroids = 10; // keep ~10 asteroids alive
-    this.spawnCooldown = 0;
-    this.fireCooldown = 0;
-    this.aiTurnTimer = 0;
     this.rng = Math.random;
+
+    // Optional injected helpers from host module
+    this.deps = {
+      tracer: tracer || null,
+      accents: accents || null,
+      resolveCosmetics: cosmeticsResolver || null,
+    };
 
     // Local simulation state (never touches main game arrays)
     this.resetLocalState();
   }
 
   resetLocalState() {
-    this.player = {
-      x: this.canvas.width * 0.35,
-      y: this.canvas.height * 0.5,
-      vx: 0,
-      vy: 0,
-      angle: 0,
-      radius: 12,
-      invulnerable: 9999,
-      shielded: 0,
-      invisible: 0,
-      rainbow: 0, // cosmetic trail
-      laserBoost: 0, // faster fire + charged bullets
+    // Start screen flyby state only
+    this.flyby = {
+      active: false,
+      x: -100,
+      y: this.canvas.height * 0.4,
+      speed: 4.5,
+      radius: 14,
+      trail: [], // {x,y,angle,alpha}
+      trailTick: 0,
     };
+    // Optional ambient asteroids state (visual-only)
     this.asteroids = [];
-    this.bullets = [];
-    this.powerups = [];
+    this.targetAsteroids = 12;
+    this.spawnCooldown = 0;
+    // Lightweight cosmetic particles for trail effects (visual-only)
     this.particles = [];
+    // Schedule next flyby (in frames)
+    this.nextFlybyFrame = this.frame + this.randomFlybyDelay();
   }
 
   start() {
@@ -49,8 +50,14 @@ export class AttractMode {
     this.isActive = true;
     this.frame = 0;
     this.resetLocalState();
-    // Seed initial large/medium asteroids near edges
-    for (let i = 0; i < this.targetAsteroids; i++) this.spawnAsteroidEdge();
+    // Launch an immediate flyby so start screen isn't empty
+    try { this.startFlyby(); } catch (_) {}
+    // Seed ambient asteroids if enabled
+    if (this.isAmbientEnabled()) {
+      for (let i = 0; i < this.targetAsteroids; i++) {
+        try { this.spawnAsteroidEdge(); } catch (_) {}
+      }
+    }
   }
 
   stop() {
@@ -58,41 +65,79 @@ export class AttractMode {
     this.resetLocalState();
   }
 
-  // Simple ship drawing (matches game style roughly)
-  drawShip(x, y, angle, scale = 1) {
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(angle);
-    ctx.scale(scale, scale);
-    ctx.globalAlpha = this.player.invisible > 0 ? 0.4 : 1;
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.moveTo(15, 0);
-    ctx.lineTo(-10, -10);
-    ctx.lineTo(-5, 0);
-    ctx.lineTo(-10, 10);
-    ctx.closePath();
-    ctx.fill();
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = '#fff';
-    ctx.stroke();
-    // Shield ring
-    if (this.player.shielded > 0) {
-      ctx.beginPath();
-      ctx.strokeStyle = '#0f0';
-      ctx.globalAlpha = 0.9;
-      ctx.lineWidth = 2;
-      ctx.arc(0, 0, 18, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    ctx.restore();
+  // Note: main-game ship drawing is reproduced inside drawFlyby using traceShipSilhouettePath + drawShipAccents
+  // Compute y-lane between title and first start button on #startScreen; fallback to mid-screen
+  computeFlybyY() {
+    try {
+      const doc = (typeof document !== 'undefined') ? document : null;
+      const start = doc ? doc.getElementById('startScreen') : null;
+      if (!start || start.classList.contains('hidden')) return this.canvas.height * 0.45;
+      const container = doc.getElementById('gameContainer');
+      const h1 = start.querySelector('h1');
+      const btn = start.querySelector('.menu-button');
+      if (container && h1 && btn) {
+        const c = container.getBoundingClientRect();
+        const r1 = h1.getBoundingClientRect();
+        const r2 = btn.getBoundingClientRect();
+        const scale = c.height / (this.canvas.height || 1);
+        const titleBottomCss = r1.bottom;
+        const buttonTopCss = r2.top;
+        // Prefer just under the title (smaller offset)
+        const desiredCss = titleBottomCss + 12; // 12px below title
+        const desiredCanvas = (desiredCss - c.top) / (scale || 1);
+        const btnTopCanvas = (buttonTopCss - c.top) / (scale || 1);
+        // Keep a minimum gap to the button
+        const minGap = 40;
+        let y = desiredCanvas;
+        if (btnTopCanvas - y < minGap) y = btnTopCanvas - minGap;
+        y = Math.max(60, Math.min(this.canvas.height - 60, y));
+        return y;
+      }
+      if (container && h1 && !btn) {
+        // No button yet; place just under title
+        const c = container.getBoundingClientRect();
+        const r1 = h1.getBoundingClientRect();
+        const scale = c.height / (this.canvas.height || 1);
+        const desiredCss = r1.bottom + 12;
+        const y = (desiredCss - c.top) / (scale || 1);
+        return Math.max(60, Math.min(this.canvas.height - 60, y));
+      }
+    } catch (_) {}
+    return this.canvas.height * 0.45;
   }
-  // Dummy gravity function for Level 1 (no gravity wells)
-  applyGravityTo(o) { return o; }
 
+  // Start a new flyby pass from left to right
+  startFlyby() {
+    this.flyby.active = true;
+    this.flyby.x = -40;
+    this.flyby.y = this.computeFlybyY();
+    this.flyby.speed = 4.4 + this.rng() * 0.8; // slight variation
+    this.flyby.radius = 14;
+    this.flyby.trail = [];
+    this.flyby.trailTick = 0;
+  }
+
+  // Random delay in frames between 4–8 seconds
+  randomFlybyDelay() {
+    const min = 4 * 60;
+    const max = 8 * 60;
+    return (min + (this.rng() * (max - min))) | 0;
+  }
+
+  // Collision handling removed in attract mode for performance
+
+  // Ambient toggle (default ON; opt-out via window.enableAttractAsteroids = false)
+  isAmbientEnabled() {
+    // On by default for visuals; opt-out via window.enableAttractAsteroids = false
+    try {
+      if (typeof window === 'undefined') return true;
+      return window.enableAttractAsteroids !== false;
+    } catch (_) { return true; }
+  }
+
+  // Spawn a background asteroid from screen edge with gentle drift toward center
   spawnAsteroidEdge() {
-    const side = Math.floor(this.rng() * 4); // 0:L 1:R 2:T 3:B
+    const side = (this.rng() * 4) | 0; // 0:L 1:R 2:T 3:B
     const pad = 30;
     let x = 0, y = 0;
     if (side === 0) { x = -pad; y = this.rng() * this.canvas.height; }
@@ -101,7 +146,7 @@ export class AttractMode {
     else { x = this.rng() * this.canvas.width; y = this.canvas.height + pad; }
     const size = this.rng() < 0.55 ? 3 : 2; // mostly large + some medium
     const a = new Asteroid(x, y, size, false, false);
-    // nudge velocity slightly toward center for more on-screen action
+    // Nudge velocity slightly toward center for on-screen motion
     const cx = this.canvas.width * 0.5, cy = this.canvas.height * 0.5;
     const ang = Math.atan2(cy - y, cx - x);
     a.vx = a.vx * 0.6 + Math.cos(ang) * 0.6;
@@ -109,164 +154,447 @@ export class AttractMode {
     this.asteroids.push(a);
   }
 
-  fireBullet(angle, charged = false) {
-    // Bullets disabled in attract mode
-    return;
-  }
-
-  activatePowerup(pu) {
-    switch (pu.type) {
-      case 'bomb': {
-        // Big explosion destroys nearby asteroids
-        this.createExplosion(pu.x, pu.y, 140, '#ff0');
-        for (let i = this.asteroids.length - 1; i >= 0; i--) {
-          const a = this.asteroids[i];
-          const d = Math.hypot(a.x - pu.x, a.y - pu.y);
-          if (d < 140) {
-            this.destroyAsteroidAtIndex(i);
-          }
-        }
-        break;
-      }
-      case 'shield': this.player.shielded = 360; break; // ~6s
-      case 'teleport': {
-        this.player.x = 40 + this.rng() * (this.canvas.width - 80);
-        this.player.y = 40 + this.rng() * (this.canvas.height - 80);
-        break;
-      }
-      case 'flak': {
-        // radial burst
-        for (let i = 0; i < 16; i++) this.fireBullet((Math.PI * 2 * i) / 16, false);
-        break;
-      }
-      case 'rainbow': this.player.rainbow = 420; break; // cosmetic trail ~7s
-      case 'invisible': this.player.invisible = 300; break; // ~5s
-      case 'laser': this.player.laserBoost = 360; break; // faster fire + charged bullets
-      case 'clone': {
-        // simple: spawn another radial burst to imply clone support
-        for (let i = 0; i < 8; i++) this.fireBullet((Math.PI * 2 * i) / 8, false);
-        break;
-      }
-      default: break;
+  // Resolve selected cosmetics: prefer injected resolver; then live actives; then preferred + unlocked; else null/default
+  resolveCosmetics() {
+    if (this.deps && typeof this.deps.resolveCosmetics === 'function') {
+      try {
+        const r = this.deps.resolveCosmetics();
+        if (r && (r.skinId || r.trailId || r.skinId === null || r.trailId === null)) return r;
+      } catch (_) {}
     }
-  }
-
-  pushPowerup(x, y, type) {
-    this.powerups.push(new Powerup(x, y, type));
-  }
-  canPushPowerup() { return this.powerups.length < 6; }
-
-  destroyAsteroidAtIndex(idx) {
-    const a = this.asteroids[idx];
-    const newOnes = a.destroy({
-      spawnParticle: (x, y, vx, vy, color, life) => this.particles.push(new Particle(x, y, vx, vy, color, life)),
-      awardPoints: () => {},
-      createExplosion: (x, y, r, color) => this.createExplosion(x, y, r, color),
-      onEliteExplosionDamage: () => {},
-      pushPowerup: (x, y, type) => this.pushPowerup(x, y, type),
-      canPushPowerup: () => this.canPushPowerup(),
-    });
-    this.asteroids.splice(idx, 1);
-    if (Array.isArray(newOnes) && newOnes.length) this.asteroids.push(...newOnes);
-  }
-
-  createExplosion(x, y, radius, color) {
-    // ring + shards + dots
-    const ring = new Particle(x, y, 0, 0, color, 24);
-    ring.shape = 'ring';
-    ring.radius = 6;
-    ring.growth = radius / 24;
-    ring.thickness = 2;
-    ring.glow = 24;
-    this.particles.push(ring);
-    for (let i = 0; i < 28; i++) {
-      const ang = (Math.PI * 2 * i) / 28;
-      const sp = 2 + this.rng() * 3;
-      const p = new Particle(x, y, Math.cos(ang) * sp, Math.sin(ang) * sp, color, 36 + (this.rng() * 12)|0);
-      p.shape = i % 3 === 0 ? 'shard' : 'dot';
-      p.length = 10 + this.rng() * 10;
-      p.glow = 18;
-      this.particles.push(p);
+    // Live active selections (if game already chose them)
+    const activeSkin = (typeof window !== 'undefined') ? window.activeSkinId : null;
+    const activeTrail = (typeof window !== 'undefined') ? window.activeTrailId : null;
+    if (activeSkin || activeTrail) {
+      return { skinId: activeSkin || null, trailId: activeTrail || null };
     }
+
+    // Preferences (could be 'auto' or 'none')
+    const prefSkin = (typeof window !== 'undefined') ? window.preferredSkinId : null;
+    const prefTrail = (typeof window !== 'undefined') ? window.preferredTrailId : null;
+    // Read unlocked rewards from localStorage
+    let unlocked = new Set();
+    try {
+      const r = (typeof localStorage !== 'undefined') ? localStorage.getItem('asteraidUnlockedRewards') : null;
+      const arr = Array.isArray(JSON.parse(r || '[]')) ? JSON.parse(r || '[]') : [];
+      unlocked = new Set(arr);
+    } catch (_) {}
+    // Priority orders (mirror ast.html)
+    const SKIN_PRIORITY = ['skin_aurora','skin_arctic','skin_midnight','skin_gold','skin_crimson','skin_vaporwave','skin_emerald','skin_cobalt'];
+    const TRAIL_PRIORITY = ['trail_ember','trail_plasma','trail_mint','trail_stardust','trail_iceBlue','trail_sunset','trail_neonPurple'];
+
+    const highestUnlocked = (order) => {
+      for (const id of order) if (unlocked.has(id)) return id;
+      return null;
+    };
+
+    // Skin selection
+    let skinId = null;
+    if (prefSkin === 'none') skinId = null;
+    else if (prefSkin && prefSkin !== 'auto' && unlocked.has(prefSkin)) skinId = prefSkin;
+    else skinId = highestUnlocked(SKIN_PRIORITY);
+
+    // Trail selection
+    let trailId = null;
+    if (prefTrail === 'none') trailId = null;
+    else if (prefTrail && prefTrail !== 'auto' && unlocked.has(prefTrail)) trailId = prefTrail;
+    else trailId = highestUnlocked(TRAIL_PRIORITY);
+
+    return { skinId, trailId };
   }
+
+  // Draw the cosmetic ship and its afterimage trail exactly like main-game visuals
+  drawFlyby(ctx) {
+    if (!this.flyby.active) return;
+    const x = this.flyby.x, y = this.flyby.y;
+    const angle = 0; // horizontal right
+    // Resolve cosmetics each frame using preferences + unlocked rewards
+    const { skinId, trailId } = this.resolveCosmetics();
+
+    // 1) Afterimage trail (match main-game): silhouette stroke with glow/color per trail
+    if (this.flyby.trail && this.flyby.trail.length) {
+      for (let i = 0; i < this.flyby.trail.length; i++) {
+        const t = this.flyby.trail[i];
+        if (t.alpha <= 0.02) continue;
+        ctx.save();
+        ctx.translate(t.x, t.y);
+        ctx.rotate(t.angle || 0);
+        ctx.globalAlpha = t.alpha;
+        ctx.shadowBlur = 4;
+        let trailColor = '#0ff';
+        if (trailId === 'trail_neonPurple') trailColor = '#b66bff';
+        else if (trailId === 'trail_sunset') trailColor = '#ff9a9e';
+        else if (trailId === 'trail_iceBlue') trailColor = '#9fe3ff';
+        else if (trailId === 'trail_stardust') {
+          const f = (Math.sin((this.frame + i * 7) * 0.08) + 1) * 0.5; // 0..1
+          const c = Math.floor(207 + f * (255 - 207));
+          trailColor = `rgb(${c},${c},255)`;
+        } else if (trailId === 'trail_mint') trailColor = '#6fffc1';
+        else if (trailId === 'trail_plasma') trailColor = '#ff4fd6';
+        else if (trailId === 'trail_ember') trailColor = '#ff8a2b';
+        ctx.shadowColor = trailColor;
+        ctx.strokeStyle = trailColor;
+        ctx.lineWidth = (trailId === 'trail_plasma') ? 3 : 2;
+        ctx.beginPath();
+        const tracer = (this.deps && this.deps.tracer) ? this.deps.tracer : ((typeof window !== 'undefined') ? window.traceShipSilhouettePath : null);
+        if (typeof tracer === 'function') tracer(ctx, skinId);
+        else { ctx.moveTo(12, 0); ctx.lineTo(-8, -8); ctx.lineTo(-4, 0); ctx.lineTo(-8, 8); ctx.closePath(); }
+        ctx.stroke();
+        ctx.restore();
+        // fade (handled in update as multiply), draw mirrors main-game values
+      }
+    }
+    // If trail samples are not yet populated (e.g., first couple of frames), draw a minimal synthetic trail so cosmetics are visible immediately
+    else if (trailId && trailId !== 'none') {
+      const offsets = [ -8, -16, -24 ];
+      for (let j = 0; j < offsets.length; j++) {
+        ctx.save();
+        ctx.translate(x + offsets[j], y);
+        ctx.rotate(angle);
+        const baseAlpha = 0.28 * Math.pow(0.7, j);
+        ctx.globalAlpha = baseAlpha;
+        ctx.shadowBlur = 4;
+        let trailColor = '#0ff';
+        if (trailId === 'trail_neonPurple') trailColor = '#b66bff';
+        else if (trailId === 'trail_sunset') trailColor = '#ff9a9e';
+        else if (trailId === 'trail_iceBlue') trailColor = '#9fe3ff';
+        else if (trailId === 'trail_stardust') {
+          const f = (Math.sin((this.frame + j * 7) * 0.08) + 1) * 0.5; // 0..1
+          const c = Math.floor(207 + f * (255 - 207));
+          trailColor = `rgb(${c},${c},255)`;
+        } else if (trailId === 'trail_mint') trailColor = '#6fffc1';
+        else if (trailId === 'trail_plasma') trailColor = '#ff4fd6';
+        else if (trailId === 'trail_ember') trailColor = '#ff8a2b';
+        ctx.shadowColor = trailColor;
+        ctx.strokeStyle = trailColor;
+        ctx.lineWidth = (trailId === 'trail_plasma') ? 3 : 2;
+        ctx.beginPath();
+        const tracer = (this.deps && this.deps.tracer) ? this.deps.tracer : ((typeof window !== 'undefined') ? window.traceShipSilhouettePath : null);
+        if (typeof tracer === 'function') tracer(ctx, skinId);
+        else { ctx.moveTo(12, 0); ctx.lineTo(-8, -8); ctx.lineTo(-4, 0); ctx.lineTo(-8, 8); ctx.closePath(); }
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // 2) Ship silhouette stroke with glow and per-skin accents (like drawPlayer)
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    // Skin color mapping (same as main-game drawPlayer)
+    let color = '#0ff';
+    let skinGlowBoost = 0;
+    if (skinId === 'skin_emerald') {
+      color = '#3ef08a';
+    } else if (skinId === 'skin_vaporwave') {
+      color = '#ff71ce';
+    } else if (skinId === 'skin_cobalt') {
+      color = '#3ea0ff';
+    } else if (skinId === 'skin_crimson') {
+      color = '#ff3b3b';
+    } else if (skinId === 'skin_gold') {
+      color = '#ffcf3e'; skinGlowBoost = 2;
+    } else if (skinId === 'skin_midnight') {
+      color = '#1e2a78'; skinGlowBoost = 3;
+    } else if (skinId === 'skin_arctic') {
+      color = '#dff6ff';
+    } else if (skinId === 'skin_aurora') {
+      const hue = (this.frame * 1.5) % 360;
+      color = `hsl(${hue}, 85%, 65%)`; skinGlowBoost = 2;
+    }
+    // Base glow/line width like main game
+    let shipGlow = 10;
+    const baseLineWidth = 3; // no armor in attract mode
+    ctx.shadowBlur = shipGlow + skinGlowBoost;
+    ctx.shadowColor = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = baseLineWidth;
+    ctx.beginPath();
+    const tracer2 = (this.deps && this.deps.tracer) ? this.deps.tracer : ((typeof window !== 'undefined') ? window.traceShipSilhouettePath : null);
+    if (typeof tracer2 === 'function') tracer2(ctx, skinId);
+    else { ctx.moveTo(12, 0); ctx.lineTo(-8, -8); ctx.lineTo(-4, 0); ctx.lineTo(-8, 8); ctx.closePath(); }
+    ctx.stroke();
+
+    // Per-skin accents
+    const accents = (this.deps && this.deps.accents) ? this.deps.accents : ((typeof window !== 'undefined') ? window.drawShipAccents : null);
+    if (typeof accents === 'function') accents(ctx, skinId, color, shipGlow + skinGlowBoost, baseLineWidth);
+    ctx.restore();
+  }
+  // All entity/FX helper functions removed in attract mode
 
   update() {
     if (!this.isActive) return;
     this.frame++;
-    // AI: choose random steering and occasional target aiming
-    this.aiTurnTimer--;
-    if (this.aiTurnTimer <= 0) {
-      this.aiTurnTimer = 30 + (this.rng() * 60)|0; // change every 0.5-1.5s
-      // steer toward nearest asteroid with some noise
-      let target = null, bestD = 1e9;
-      for (const a of this.asteroids) {
-        const d = Math.hypot(a.x - this.player.x, a.y - this.player.y);
-        if (d < bestD) { bestD = d; target = a; }
-      }
-      if (target) {
-        const ang = Math.atan2(target.y - this.player.y, target.x - this.player.x);
-        this.player.angle = ang + (this.rng() * 0.6 - 0.3);
-      } else {
-        this.player.angle += this.rng() * 0.6 - 0.3;
-      }
-      // thrust impulse
-      const thrust = 0.6 + this.rng() * 0.6;
-      this.player.vx += Math.cos(this.player.angle) * thrust * 0.5;
-      this.player.vy += Math.sin(this.player.angle) * thrust * 0.5;
+    // Flyby scheduling
+    const startEl = (typeof document !== 'undefined') ? document.getElementById('startScreen') : null;
+    const startVisible = !!(startEl && !startEl.classList.contains('hidden'));
+    if (!this.flyby.active && startVisible && this.frame >= this.nextFlybyFrame) {
+      this.startFlyby();
     }
-    // friction and clamp
-    this.player.vx *= 0.99; this.player.vy *= 0.99;
-    const sp = Math.hypot(this.player.vx, this.player.vy);
-    const maxSp = 4.0;
-    if (sp > maxSp) { this.player.vx *= maxSp / sp; this.player.vy *= maxSp / sp; }
-    this.player.x += this.player.vx; this.player.y += this.player.vy;
-    // wrap
-    if (this.player.x < 0) this.player.x = this.canvas.width; if (this.player.x > this.canvas.width) this.player.x = 0;
-    if (this.player.y < 0) this.player.y = this.canvas.height; if (this.player.y > this.canvas.height) this.player.y = 0;
-    // timers
-    if (this.player.shielded > 0) this.player.shielded--;
-    if (this.player.invisible > 0) this.player.invisible--;
-    if (this.player.rainbow > 0) this.player.rainbow--;
-    if (this.player.laserBoost > 0) this.player.laserBoost--;
 
-    // Shooting disabled in attract mode (no bullets)
+    // Advance flyby only (no collisions/AI/entities)
+    if (this.flyby.active) {
+      this.flyby.x += this.flyby.speed;
+      // Trail sampling (lighter than main-game for start screen): every 3 frames, cap 8
+      this.flyby.trailTick = (this.flyby.trailTick || 0) + 1;
+      if (this.flyby.trailTick % 3 === 0) {
+        this.flyby.trail.push({ x: this.flyby.x, y: this.flyby.y, angle: 0, alpha: 0.42 });
+        if (this.flyby.trail.length > 8) this.flyby.trail.shift();
+      }
+      // Fade multiply
+      for (let i = this.flyby.trail.length - 1; i >= 0; i--) {
+        this.flyby.trail[i].alpha *= 0.88;
+        if (this.flyby.trail[i].alpha < 0.03) this.flyby.trail.splice(i, 1);
+      }
 
-    // Rainbow trail disabled in attract mode
+      // Spawn lightweight cosmetic particles behind the engine based on selected trail
+      try {
+        const { trailId } = this.resolveCosmetics();
+        if (trailId && trailId !== 'none') {
+          // Match ast.html logic using a fixed angle of 0 (flyby faces right)
+          const ang = 0;
+          const cosA = Math.cos(ang), sinA = Math.sin(ang);
+          const engineX = this.flyby.x - cosA * 12;
+          const engineY = this.flyby.y - sinA * 12;
+          switch (trailId) {
+            case 'trail_ember': {
+              // Average ~1 ember per frame (2 every ~2 frames), occasional ring (~1/6 per frame)
+              if (this.rng() < 0.5) {
+                for (let i = 0; i < 2; i++) {
+                  const col = (Math.random() < 0.5) ? '#ff8a2b' : (Math.random() < 0.5 ? '#ff4d00' : '#ffd180');
+                  const p = new Particle(
+                    engineX,
+                    engineY,
+                    -cosA * (1.2 + Math.random() * 0.8) + (Math.random() - 0.5) * 0.4,
+                    -sinA * (1.2 + Math.random() * 0.8) + (Math.random() - 0.5) * 0.4,
+                    col,
+                    32 + Math.random() * 14
+                  );
+                  p.glow = 14;
+                  p.radius = 1.8 + Math.random() * 1.6;
+                  p.noWrap = true;
+                  this.particles.push(p);
+                }
+              }
+              if (this.rng() < (1/6)) {
+                const r = new Particle(engineX, engineY, 0, 0, '#ffa13a', 22);
+                r.shape = 'ring';
+                r.radius = 2;
+                r.growth = 1.1;
+                r.thickness = 2;
+                r.glow = 18;
+                this.particles.push(r);
+              }
+              break;
+            }
+            case 'trail_iceBlue': {
+              // Average one spawn burst every ~3 frames
+              if (this.rng() < (1/3)) {
+                const ring = new Particle(engineX, engineY, 0, 0, '#c7f2ff', 30);
+                ring.shape = 'ring';
+                ring.radius = 3;
+                ring.growth = 0.9;
+                ring.thickness = 1.5;
+                ring.glow = 18;
+                this.particles.push(ring);
+                const p = new Particle(
+                  engineX,
+                  engineY,
+                  -cosA * 0.6 + (Math.random() - 0.5) * 0.3,
+                  -sinA * 0.6 + (Math.random() - 0.5) * 0.3,
+                  '#9fe3ff',
+                  35
+                );
+                p.glow = 12;
+                p.radius = 1.2 + Math.random() * 1.2;
+                p.noWrap = true;
+                this.particles.push(p);
+              }
+              break;
+            }
+            case 'trail_plasma': {
+              // Long glowing streak (shard) with high blur
+              const s = new Particle(
+                engineX,
+                engineY,
+                -cosA * 0.4 + (Math.random() - 0.5) * 0.2,
+                -sinA * 0.4 + (Math.random() - 0.5) * 0.2,
+                '#ff4fd6',
+                30
+              );
+              s.shape = 'shard';
+              s.length = 34 + Math.random() * 18;
+              s.thickness = 3;
+              s.glow = 24;
+              s.rotation = ang + Math.PI;
+              s.angularVel = 0;
+              s.noWrap = true;
+              this.particles.push(s);
+              if (this.rng() < (1/6)) {
+                const r = new Particle(engineX, engineY, 0, 0, '#ff9bf0', 19);
+                r.shape = 'ring';
+                r.radius = 2;
+                r.growth = 1.0;
+                r.thickness = 2;
+                r.glow = 18;
+                this.particles.push(r);
+              }
+              break;
+            }
+            case 'trail_mint': {
+              if (this.rng() < (1/3)) {
+                const p = new Particle(
+                  engineX,
+                  engineY,
+                  -cosA * 0.8 + (Math.random() - 0.5) * 0.4,
+                  -sinA * 0.8 + (Math.random() - 0.5) * 0.4,
+                  '#6fffc1',
+                  32
+                );
+                p.glow = 12;
+                p.radius = 1.4 + Math.random() * 1.2;
+                p.noWrap = true;
+                this.particles.push(p);
+                if (Math.random() < 0.25) {
+                  const r = new Particle(engineX, engineY, 0, 0, '#98ffd9', 22);
+                  r.shape = 'ring';
+                  r.radius = 2;
+                  r.growth = 0.8;
+                  r.thickness = 1.5;
+                  r.glow = 12;
+                  this.particles.push(r);
+                }
+              }
+              break;
+            }
+            case 'trail_stardust': {
+              if (this.rng() < 0.5) {
+                const hue = 220 + Math.sin(this.frame * 0.1) * 10; // bluish white twinkle
+                const col = `hsl(${hue}, 100%, ${78 + Math.sin(this.frame * 0.2) * 10}%)`;
+                const p = new Particle(
+                  engineX,
+                  engineY,
+                  (Math.random() - 0.5) * 1.4,
+                  (Math.random() - 0.5) * 1.4,
+                  col,
+                  35
+                );
+                p.glow = 10;
+                p.radius = 1 + Math.random() * 1.0;
+                p.noWrap = true;
+                this.particles.push(p);
+              }
+              break;
+            }
+            case 'trail_sunset': {
+              if (this.rng() < 0.5) {
+                const f = (Math.sin(this.frame * 0.08) + 1) * 0.5;
+                const r = 255, g = Math.floor(90 + f * 110), b = Math.floor(158 - f * 80);
+                const col = `rgb(${r},${g},${b})`;
+                const p = new Particle(
+                  engineX,
+                  engineY,
+                  -cosA * 0.7 + (Math.random() - 0.5) * 0.4,
+                  -sinA * 0.7 + (Math.random() - 0.5) * 0.4,
+                  col,
+                  32
+                );
+                p.glow = 14;
+                p.radius = 1.4 + Math.random() * 1.2;
+                p.noWrap = true;
+                this.particles.push(p);
+                if (this.rng() < (1/8)) {
+                  const r2 = new Particle(engineX, engineY, 0, 0, col, 19);
+                  r2.shape = 'ring';
+                  r2.radius = 2;
+                  r2.growth = 1.1;
+                  r2.thickness = 2;
+                  r2.glow = 16;
+                  this.particles.push(r2);
+                }
+              }
+              break;
+            }
+            case 'trail_neonPurple': {
+              if (this.rng() < 0.5) {
+                const s = new Particle(
+                  engineX,
+                  engineY,
+                  -cosA * 0.6 + (Math.random() - 0.5) * 0.3,
+                  -sinA * 0.6 + (Math.random() - 0.5) * 0.3,
+                  '#b66bff',
+                  30
+                );
+                s.shape = 'shard';
+                s.length = 14 + Math.random() * 10;
+                s.thickness = 2;
+                s.glow = 18;
+                s.rotation = ang + Math.PI;
+                s.angularVel = 0.02 * (Math.random() - 0.5);
+                s.noWrap = true;
+                this.particles.push(s);
+              }
+              break;
+            }
+          }
+        }
+      } catch (_) {}
 
-    // Bullets disabled
-    this.bullets.length = 0;
-    // Update asteroids only
-    for (const a of this.asteroids) {
-      try { a.update(1, [], this.canvas, (o)=>this.applyGravityTo(o), ()=>{}); a.draw(this.ctx); } catch (e) {}
+      // End of pass
+      if (this.flyby.x > this.canvas.width + 40) {
+        this.flyby.active = false;
+        this.nextFlybyFrame = this.frame + this.randomFlybyDelay();
+      }
     }
-    // Powerups/particles disabled
-    this.powerups.length = 0;
-    this.particles.length = 0;
 
-    // Bullet collisions disabled in attract mode
+    // Always update particles so they decay even when flyby is inactive
+    if (this.particles && this.particles.length) {
+      for (let i = this.particles.length - 1; i >= 0; i--) {
+        try { this.particles[i].update(this.canvas); } catch (_) {}
+        if (this.particles[i].lifetime <= 0) this.particles.splice(i, 1);
+      }
+      // Soft cap to avoid buildup
+      if (this.particles.length > 90) this.particles.splice(0, this.particles.length - 90);
+    }
 
-    // Ship collision and spark effects disabled in attract mode
-
-    // Powerup collection disabled in attract mode
-
-    // Maintain asteroid population
-    if (this.asteroids.length < this.targetAsteroids) {
-      this.spawnCooldown--;
-      if (this.spawnCooldown <= 0) { this.spawnAsteroidEdge(); this.spawnCooldown = 15 + (this.rng()*30)|0; }
+    // Update lightweight ambient asteroids (visual-only)
+    if (this.isAmbientEnabled()) {
+      if (this.asteroids && this.asteroids.length) {
+        for (let i = 0; i < this.asteroids.length; i++) {
+          const a = this.asteroids[i];
+          try { a.update(1, [], this.canvas, ()=>{}, ()=>{}); } catch (_) {}
+        }
+      }
+      // Maintain population with a small cooldown
+      if (this.asteroids.length < this.targetAsteroids) {
+        this.spawnCooldown--;
+        if (this.spawnCooldown <= 0) { try { this.spawnAsteroidEdge(); } catch (_) {} this.spawnCooldown = 24 + ((this.rng()*24)|0); }
+      }
     }
   }
 
   draw(ctx) {
     if (!this.isActive) return;
-    // Entities are drawn during update; ship is intentionally not drawn in attract mode
+    // Draw background asteroids (behind flyby)
+    if (this.isAmbientEnabled() && this.asteroids && this.asteroids.length) {
+      for (let i = 0; i < this.asteroids.length; i++) {
+        try { this.asteroids[i].draw(ctx); } catch (_) {}
+      }
+    }
 
-    // Subtle hint
-    ctx.save();
-    ctx.globalAlpha = 0.75;
-    ctx.fillStyle = '#9df';
-    ctx.font = 'bold 16px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText('', this.canvas.width * 0.5, this.canvas.height - 28);
-    ctx.restore();
+    // Draw cosmetic particles under the ship
+    if (this.particles && this.particles.length) {
+      ctx.save();
+      const prevOp = ctx.globalCompositeOperation;
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < this.particles.length; i++) {
+        try { this.particles[i].draw(ctx); } catch (_) {}
+      }
+      ctx.globalCompositeOperation = prevOp;
+      ctx.restore();
+    }
+
+    // Draw flyby ship last so it sits above asteroid sprites
+    this.drawFlyby(ctx);
   }
 }

@@ -90,3 +90,7 @@ export const TETHER_LINE_BASE_WIDTH = 2.6;    // base line width
 export const TETHER_SPEED_AFTER_BREAK = 0.6;  // multiply node speed after tether breaks
 export const TETHER_POINTS_ON_BREAK = 40;    // award points when breaking a tether
 export const TETHER_RESPAWN_FRAMES = 540;     // ~9s @60fps before pair respawns
+
+// Player Shield power-up: charged-shot detonation shockwave
+export const SHIELD_SHOCKWAVE_RADIUS = 160;   // knockback radius when shield explodes on charged attack
+export const SHIELD_SHOCKWAVE_STRENGTH = 10;  // push strength applied to nearby objects

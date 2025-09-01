@@ -57,6 +57,19 @@ export class TetherPair {
     this.tetherBroken = false;
     this.respawnTimer = 0;
     this.speedScaled = false;
+    // Ember visual system for active tether (optimized sprite blits)
+    this.embers = [];
+    this.sparkSprite = null;
+    // Node combat state (active only after tether broken)
+    this.aHits = 4;
+    this.bHits = 4;
+    this.aDead = false;
+    this.bDead = false;
+    // Precomputed jagged outlines for nodes
+    this.aVerts = [];
+    this.bVerts = [];
+    this.aPath = null;
+    this.bPath = null;
     this.respawn(canvas, true);
   }
   // Randomize endpoints just offscreen, velocity pointing inward
@@ -90,6 +103,12 @@ export class TetherPair {
     this.tetherBroken = false;
     this.respawnTimer = 0;
     this.speedScaled = false;
+    // Reset node states
+    this.aHits = 4; this.bHits = 4;
+    this.aDead = false; this.bDead = false;
+    // Rebuild jagged outlines
+    this.#buildNodeGeometry();
+    this.#ensureSparkSprite();
   }
   getEndpoints() {
     return [this.ax, this.ay, this.bx, this.by];
@@ -110,29 +129,45 @@ export class TetherPair {
   }
   update(canvas) {
     this.pulse += TETHER_PULSE_SPEED;
-    // Move endpoints with wrap
+    // Move endpoints with bounce (no wrap)
     this.ax += this.avx; this.ay += this.avy;
     this.bx += this.bvx; this.by += this.bvy;
     const r = this.radius;
-    if (this.ax < -r) this.ax = canvas.width + r;
-    if (this.ax > canvas.width + r) this.ax = -r;
-    if (this.ay < -r) this.ay = canvas.height + r;
-    if (this.ay > canvas.height + r) this.ay = -r;
-    if (this.bx < -r) this.bx = canvas.width + r;
-    if (this.bx > canvas.width + r) this.bx = -r;
-    if (this.by < -r) this.by = canvas.height + r;
-    if (this.by > canvas.height + r) this.by = -r;
+    // A
+    if (this.ax < r) { this.ax = r; this.avx *= -1; }
+    if (this.ax > canvas.width - r) { this.ax = canvas.width - r; this.avx *= -1; }
+    if (this.ay < r) { this.ay = r; this.avy *= -1; }
+    if (this.ay > canvas.height - r) { this.ay = canvas.height - r; this.avy *= -1; }
+    // B
+    if (this.bx < r) { this.bx = r; this.bvx *= -1; }
+    if (this.bx > canvas.width - r) { this.bx = canvas.width - r; this.bvx *= -1; }
+    if (this.by < r) { this.by = r; this.bvy *= -1; }
+    if (this.by > canvas.height - r) { this.by = canvas.height - r; this.bvy *= -1; }
     // Handle respawn cycle after break
     if (this.tetherBroken && this.respawnTimer > 0) {
       this.respawnTimer--;
       if (this.respawnTimer === 0) this.respawn(canvas, false);
+    }
+    // Update embers and emit while tether is active
+    if (!this.tetherBroken) {
+      // Emit 0-2 embers per frame depending on pulse
+      const emitCount = (Math.random() < 0.6 ? 1 : 0) + (Math.random() < 0.15 ? 1 : 0);
+      for (let e = 0; e < emitCount; e++) this.#emitEmber();
+    }
+    // Update existing embers
+    for (let i = this.embers.length - 1; i >= 0; i--) {
+      const em = this.embers[i];
+      em.x += em.vx; em.y += em.vy;
+      em.life--;
+      em.alpha *= 0.95;
+      if (em.life <= 0 || em.alpha <= 0.02) this.embers.splice(i, 1);
     }
   }
   draw(ctx) {
     // Draw tether first for under-glow, if active
     if (!this.tetherBroken) {
       const p = 0.5 + 0.5 * Math.sin(this.pulse);
-      const lw = TETHER_LINE_BASE_WIDTH + 1.7 * p;
+      const lw = (TETHER_LINE_BASE_WIDTH + 1.7 * p) * 1.5; // thicker while tether active
       const grad = ctx.createLinearGradient(this.ax, this.ay, this.bx, this.by);
       grad.addColorStop(0, 'rgba(120, 220, 255, 0.95)');
       grad.addColorStop(0.5, 'rgba(240, 130, 255, 0.95)');
@@ -159,33 +194,195 @@ export class TetherPair {
       ctx.stroke();
       ctx.globalCompositeOperation = prevOp;
     }
-    // Draw glowing endpoints as neon blue nodes
-    this.#drawNode(ctx, this.ax, this.ay);
-    this.#drawNode(ctx, this.bx, this.by);
+    // Draw endpoints as jagged neon nodes (thicker while tether active)
+    if (!this.aDead) this.#drawNode(ctx, this.ax, this.ay, !this.tetherBroken, this.aPath);
+    if (!this.bDead) this.#drawNode(ctx, this.bx, this.by, !this.tetherBroken, this.bPath);
+    // Draw white sparkling embers
+    if (this.embers.length && this.sparkSprite) {
+      const prevOp2 = ctx.globalCompositeOperation;
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < this.embers.length; i++) {
+        const em = this.embers[i];
+        const s = this.sparkSprite.width * em.scale;
+        ctx.globalAlpha = em.alpha;
+        ctx.drawImage(this.sparkSprite, em.x - s * 0.5, em.y - s * 0.5, s, s);
+      }
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = prevOp2;
+    }
   }
-  #drawNode(ctx, x, y) {
+  #drawNode(ctx, x, y, tetherActive, path) {
+    if ((x === undefined) || (y === undefined)) return;
+    if (tetherActive === undefined) tetherActive = true;
     const p = 0.5 + 0.5 * Math.sin(this.pulse * 1.8);
-    const r = this.radius;
-    // Halo
+    const color = '#6cf';
+    const coreColor = '#cfffff';
+    const lwCore = tetherActive ? 3.2 : 2.2; // thicker while tether active
+    // Neon halo
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.42 + 0.36 * p;
     ctx.shadowBlur = 22 + 10 * p;
-    ctx.shadowColor = '#6cf';
-    ctx.strokeStyle = '#6cf';
-    ctx.lineWidth = 3.0;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.stroke();
-    // Core dot
+    ctx.shadowColor = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lwCore + 1.6;
+    if (path) {
+      ctx.translate(x, y);
+      ctx.stroke(path);
+      ctx.translate(-x, -y);
+    } else {
+      ctx.beginPath();
+      ctx.arc(x, y, this.radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // Core jagged outline
     ctx.globalAlpha = 1.0;
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lwCore;
+    if (path) {
+      ctx.translate(x, y);
+      ctx.stroke(path);
+      ctx.translate(-x, -y);
+    } else {
+      ctx.beginPath();
+      ctx.arc(x, y, this.radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // Core dot
     ctx.shadowBlur = 12;
     ctx.shadowColor = '#9ef';
-    ctx.fillStyle = '#cfffff';
+    ctx.fillStyle = coreColor;
     ctx.beginPath();
     ctx.arc(x, y, 4.5 + 1.5 * p, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+  }
+  #buildNodeGeometry() {
+    // Build irregular polygon outlines similar to asteroids for A and B
+    const build = () => {
+      const verts = [];
+      const n = 12;
+      for (let i = 0; i < n; i++) {
+        const ang = (i / n) * Math.PI * 2;
+        const variance = 0.82 + Math.random() * 0.32;
+        verts.push({ angle: ang, radius: this.radius * variance });
+      }
+      const path = new Path2D();
+      for (let j = 0; j < verts.length; j++) {
+        const vx = Math.cos(verts[j].angle) * verts[j].radius;
+        const vy = Math.sin(verts[j].angle) * verts[j].radius;
+        if (j === 0) path.moveTo(vx, vy); else path.lineTo(vx, vy);
+      }
+      path.closePath();
+      return { verts, path };
+    };
+    const a = build(); this.aVerts = a.verts; this.aPath = a.path;
+    const b = build(); this.bVerts = b.verts; this.bPath = b.path;
+  }
+  isFullyDestroyed() { return this.aDead && this.bDead; }
+
+  // Damage handler: only works after tether is broken
+  // deps: { createExplosion, awardPoints, addEXP, spawnParticle }
+  hitNode(which, deps, ix, iy) {
+    if (!this.tetherBroken) return false;
+    const { createExplosion, awardPoints, addEXP, spawnParticle } = deps || {};
+    // micro hit feedback at impact
+    if (typeof createExplosion === 'function') {
+      createExplosion(ix ?? 0, iy ?? 0, 3, '#6cf', 'micro');
+    }
+    if (which === 'A') {
+      if (this.aDead) return false;
+      this.aHits--;
+      if (this.aHits <= 0) {
+        this.aDead = true;
+        // Full destruction feedback: particles + boom + rewards
+        if (typeof spawnParticle === 'function') {
+          for (let i = 0; i < 15; i++) {
+            const ang = (Math.PI * 2 * i) / 15;
+            const spd = Math.random() * 3 + 1;
+            spawnParticle(this.ax, this.ay, Math.cos(ang) * spd, Math.sin(ang) * spd, '#6cf', 30);
+          }
+        }
+        if (typeof createExplosion === 'function') {
+          createExplosion(this.ax, this.ay, this.radius * 1.6, '#6cf');
+        }
+        if (typeof awardPoints === 'function') awardPoints(30, this.ax, this.ay, true);
+        if (typeof addEXP === 'function') addEXP(30, 'tether-node');
+        return true;
+      }
+    } else if (which === 'B') {
+      if (this.bDead) return false;
+      this.bHits--;
+      if (this.bHits <= 0) {
+        this.bDead = true;
+        if (typeof spawnParticle === 'function') {
+          for (let i = 0; i < 15; i++) {
+            const ang = (Math.PI * 2 * i) / 15;
+            const spd = Math.random() * 3 + 1;
+            spawnParticle(this.bx, this.by, Math.cos(ang) * spd, Math.sin(ang) * spd, '#6cf', 30);
+          }
+        }
+        if (typeof createExplosion === 'function') {
+          createExplosion(this.bx, this.by, this.radius * 1.6, '#6cf');
+        }
+        if (typeof awardPoints === 'function') awardPoints(30, this.bx, this.by, true);
+        if (typeof addEXP === 'function') addEXP(30, 'tether-node');
+        return true;
+      }
+    }
+    return false;
+  }
+
+  #ensureSparkSprite() {
+    if (this.sparkSprite) return;
+    const size = 5; // reduced sprite size by 50%
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const sctx = c.getContext('2d');
+    // Soft white core
+    const g = sctx.createRadialGradient(size/2, size/2, 0.5, size/2, size/2, size/2);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.6, 'rgba(255,255,255,0.6)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    sctx.fillStyle = g;
+    sctx.beginPath();
+    sctx.arc(size/2, size/2, size/2, 0, Math.PI * 2);
+    sctx.fill();
+    // Tiny cross sparkle
+    sctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    sctx.lineWidth = 1;
+    sctx.beginPath();
+    sctx.moveTo(size*0.2, size*0.5); sctx.lineTo(size*0.8, size*0.5);
+    sctx.moveTo(size*0.5, size*0.2); sctx.lineTo(size*0.5, size*0.8);
+    sctx.stroke();
+    this.sparkSprite = c;
+  }
+
+  #emitEmber() {
+    if (!this.sparkSprite) this.#ensureSparkSprite();
+    // Pick random point along the tether
+    const t = Math.random();
+    const x = this.ax + (this.bx - this.ax) * t;
+    const y = this.ay + (this.by - this.ay) * t;
+    // Perpendicular direction to the tether
+    const dx = this.bx - this.ax;
+    const dy = this.by - this.ay;
+    const len = Math.hypot(dx, dy) || 1;
+    let px = -dy / len, py = dx / len; // unit perp
+    if (Math.random() < 0.5) { px = -px; py = -py; }
+    const spd = 0.6 + Math.random() * 0.9; // 50% of previous speed/spread
+    const em = {
+      x: x + (Math.random() - 0.5) * 2, // half position jitter
+      y: y + (Math.random() - 0.5) * 2,
+      vx: px * spd + (Math.random() - 0.5) * 0.3, // half noise
+      vy: py * spd + (Math.random() - 0.5) * 0.3,
+      life: 24 + Math.floor(Math.random() * 12),
+      alpha: 0.8 + Math.random() * 0.2,
+      scale: 0.35 + Math.random() * 0.3, // half scale range
+    };
+    this.embers.push(em);
+    if (this.embers.length > 80) this.embers.splice(0, this.embers.length - 80);
   }
 }
 

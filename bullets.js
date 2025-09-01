@@ -7,13 +7,14 @@
 import { ENABLE_SPRITE_CACHE } from './constants.js';
 
 // Lightweight sprite cache for bullet visuals
-// Keyed by: `${chargeLevel}|${radius.toFixed(2)}|${color}`
+// Keyed by: `${chargeLevel}|${radius.toFixed(2)}|${color}|${variant}`
 const bulletSpriteCache = new Map();
-function getBulletSprite(chargeLevel, radius, color) {
-  const key = `${chargeLevel}|${radius.toFixed(2)}|${color}`;
+function getBulletSprite(chargeLevel, radius, color, variant = 'classic') {
+  const key = `${chargeLevel}|${radius.toFixed(2)}|${color}|${variant}`;
   const cached = bulletSpriteCache.get(key);
   if (cached) return cached;
 
+  // Base visual parameters (tuned for readability)
   const len = (chargeLevel === 0 ? 14 : (chargeLevel === 1 ? 26 : 32));
   const trailBlur = (chargeLevel === 0 ? 10 : (chargeLevel === 1 ? 18 : 22));
   const lineWidth = (chargeLevel === 0 ? 2.5 : (chargeLevel === 1 ? 4 : 5));
@@ -30,29 +31,99 @@ function getBulletSprite(chargeLevel, radius, color) {
   const xStart = margin;
   const yMid = height / 2;
   const xEnd = xStart + len;
-
-  // Trail
-  ctx.save();
-  ctx.lineCap = 'round';
-  ctx.shadowColor = color;
-  ctx.shadowBlur = trailBlur;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = lineWidth;
-  ctx.beginPath();
-  ctx.moveTo(xStart, yMid);
-  ctx.lineTo(xEnd, yMid);
-  ctx.stroke();
-  ctx.restore();
-
-  // Core dot
-  ctx.save();
-  ctx.fillStyle = color;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = coreBlur;
-  ctx.beginPath();
-  ctx.arc(xEnd, yMid, radius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+  const v = variant || 'classic';
+  // Draw variant
+  if (v === 'classic') {
+    // Trail
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.shadowColor = color; ctx.shadowBlur = trailBlur;
+    ctx.strokeStyle = color; ctx.lineWidth = lineWidth;
+    ctx.beginPath(); ctx.moveTo(xStart, yMid); ctx.lineTo(xEnd, yMid); ctx.stroke();
+    ctx.restore();
+    // Core dot
+    ctx.save();
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = coreBlur;
+    ctx.beginPath(); ctx.arc(xEnd, yMid, radius, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  } else if (v === 'dash') {
+    // Shorter dash trail + dot
+    const xDashEnd = xStart + Math.max(6, len * 0.5);
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.shadowColor = color; ctx.shadowBlur = trailBlur;
+    ctx.strokeStyle = color; ctx.lineWidth = lineWidth;
+    ctx.beginPath(); ctx.moveTo(xDashEnd - 8, yMid); ctx.lineTo(xDashEnd, yMid); ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = coreBlur;
+    ctx.beginPath(); ctx.arc(xEnd, yMid, radius, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  } else if (v === 'dot') {
+    // Only a bright dot
+    ctx.save();
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = coreBlur + 4;
+    ctx.beginPath(); ctx.arc(xEnd, yMid, radius, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  } else if (v === 'split') {
+    // Two small dots along the path
+    ctx.save();
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = coreBlur;
+    ctx.beginPath(); ctx.arc(xEnd, yMid, radius * 0.95, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(xEnd - Math.max(6, len * 0.45), yMid, radius * 0.6, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  } else if (v === 'chevron') {
+    // Filled chevron/arrow head + faint short tail
+    const half = Math.max(3, radius * 1.2);
+    const tip = xEnd;
+    const base = xEnd - Math.max(8, radius * 2.5);
+    ctx.save();
+    ctx.shadowColor = color; ctx.shadowBlur = coreBlur;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(tip, yMid);
+    ctx.lineTo(base, yMid - half);
+    ctx.lineTo(base, yMid + half);
+    ctx.closePath();
+    ctx.fill();
+    // faint tail
+    ctx.lineCap = 'round'; ctx.strokeStyle = color; ctx.lineWidth = Math.max(1.5, lineWidth - 1.2);
+    ctx.shadowBlur = Math.max(4, trailBlur - 6);
+    ctx.beginPath(); ctx.moveTo(base - 6, yMid); ctx.lineTo(base, yMid); ctx.stroke();
+    ctx.restore();
+  } else if (v === 'diamond') {
+    // Rhombus/gem head + subtle short tail
+    const rx = Math.max(3, radius * 1.2);
+    const ry = Math.max(2, radius * 0.9);
+    const cx = xEnd, cy = yMid;
+    ctx.save();
+    ctx.shadowColor = color; ctx.shadowBlur = coreBlur + 2;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - ry);
+    ctx.lineTo(cx - rx, cy);
+    ctx.lineTo(cx, cy + ry);
+    ctx.lineTo(cx + rx, cy);
+    ctx.closePath();
+    ctx.fill();
+    // subtle tail
+    ctx.lineCap = 'round'; ctx.strokeStyle = color; ctx.lineWidth = Math.max(1.5, lineWidth - 1.2);
+    ctx.shadowBlur = Math.max(4, trailBlur - 6);
+    ctx.beginPath(); ctx.moveTo(xStart + Math.max(4, len * 0.6), yMid); ctx.lineTo(cx - rx, yMid); ctx.stroke();
+    ctx.restore();
+  } else {
+    // Fallback to classic
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.shadowColor = color; ctx.shadowBlur = trailBlur;
+    ctx.strokeStyle = color; ctx.lineWidth = lineWidth;
+    ctx.beginPath(); ctx.moveTo(xStart, yMid); ctx.lineTo(xEnd, yMid); ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = coreBlur;
+    ctx.beginPath(); ctx.arc(xEnd, yMid, radius, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
 
   const sprite = { img: cvs, ax: xEnd, ay: yMid };
   bulletSpriteCache.set(key, sprite);
@@ -83,6 +154,7 @@ export class Bullet {
     const baseLifetime = this.charged ? 60 : 40;
     this.lifetime = Math.round(baseLifetime * BULLET_RANGE_MUL);
     this.color = this.charged ? '#ff0' : '#0ff';
+    this.variant = 'classic'; // can be overridden per-skin by caller
     // Optional property used by warp tunnels logic externally
     this.warpCooldown = 0;
   }
@@ -107,7 +179,7 @@ export class Bullet {
 
   draw(ctx) {
     if (ENABLE_SPRITE_CACHE) {
-      const sprite = getBulletSprite(this.chargeLevel, this.radius, this.color);
+      const sprite = getBulletSprite(this.chargeLevel, this.radius, this.color, this.variant || 'classic');
       const angle = Math.atan2(this.vy, this.vx);
       ctx.save();
       ctx.translate(this.x, this.y);
@@ -116,27 +188,78 @@ export class Bullet {
       ctx.restore();
       return;
     }
-    // Fallback: draw procedurally
-    const sp = Math.hypot(this.vx, this.vy) || 1;
+    // Fallback: draw procedurally with variants
+    const v = this.variant || 'classic';
     const len = this.chargeLevel === 0 ? 14 : (this.chargeLevel === 1 ? 26 : 32);
-    const tx = this.x - (this.vx / sp) * len;
-    const ty = this.y - (this.vy / sp) * len;
+    const trailBlur = this.chargeLevel === 0 ? 10 : (this.chargeLevel === 1 ? 18 : 22);
+    const lineWidth = this.chargeLevel === 0 ? 2.5 : (this.chargeLevel === 1 ? 4 : 5);
+    const coreBlur = this.chargeLevel === 0 ? 12 : (this.chargeLevel === 1 ? 22 : 26);
+    const angle = Math.atan2(this.vy, this.vx);
     ctx.save();
-    ctx.lineCap = 'round';
-    ctx.shadowColor = this.color;
-    ctx.shadowBlur = this.chargeLevel === 0 ? 10 : (this.chargeLevel === 1 ? 18 : 22);
-    ctx.strokeStyle = this.color;
-    ctx.lineWidth = this.chargeLevel === 0 ? 2.5 : (this.chargeLevel === 1 ? 4 : 5);
-    ctx.beginPath();
-    ctx.moveTo(tx, ty);
-    ctx.lineTo(this.x, this.y);
-    ctx.stroke();
-    // Core glow dot
-    ctx.fillStyle = this.color;
-    ctx.shadowBlur = this.chargeLevel === 0 ? 12 : (this.chargeLevel === 1 ? 22 : 26);
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(angle);
+    if (v === 'classic') {
+      ctx.lineCap = 'round';
+      ctx.shadowColor = this.color; ctx.shadowBlur = trailBlur;
+      ctx.strokeStyle = this.color; ctx.lineWidth = lineWidth;
+      ctx.beginPath(); ctx.moveTo(-len, 0); ctx.lineTo(0, 0); ctx.stroke();
+      ctx.fillStyle = this.color; ctx.shadowBlur = coreBlur;
+      ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
+    } else if (v === 'dash') {
+      const d = Math.max(6, len * 0.5);
+      ctx.lineCap = 'round';
+      ctx.shadowColor = this.color; ctx.shadowBlur = trailBlur;
+      ctx.strokeStyle = this.color; ctx.lineWidth = lineWidth;
+      ctx.beginPath(); ctx.moveTo(-d + 2, 0); ctx.lineTo(-2, 0); ctx.stroke();
+      ctx.fillStyle = this.color; ctx.shadowBlur = coreBlur;
+      ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
+    } else if (v === 'dot') {
+      ctx.fillStyle = this.color; ctx.shadowColor = this.color; ctx.shadowBlur = coreBlur + 4;
+      ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
+    } else if (v === 'split') {
+      ctx.fillStyle = this.color; ctx.shadowColor = this.color; ctx.shadowBlur = coreBlur;
+      ctx.beginPath(); ctx.arc(0, 0, this.radius * 0.95, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(-Math.max(6, len * 0.45), 0, this.radius * 0.6, 0, Math.PI * 2); ctx.fill();
+    } else if (v === 'chevron') {
+      const half = Math.max(3, this.radius * 1.2);
+      const base = -Math.max(8, this.radius * 2.5);
+      ctx.shadowColor = this.color; ctx.shadowBlur = coreBlur;
+      ctx.fillStyle = this.color;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(base, -half);
+      ctx.lineTo(base,  half);
+      ctx.closePath();
+      ctx.fill();
+      // faint tail
+      ctx.lineCap = 'round'; ctx.strokeStyle = this.color; ctx.lineWidth = Math.max(1.5, lineWidth - 1.2);
+      ctx.shadowBlur = Math.max(4, trailBlur - 6);
+      ctx.beginPath(); ctx.moveTo(base - 6, 0); ctx.lineTo(base, 0); ctx.stroke();
+    } else if (v === 'diamond') {
+      const rx = Math.max(3, this.radius * 1.2);
+      const ry = Math.max(2, this.radius * 0.9);
+      ctx.shadowColor = this.color; ctx.shadowBlur = coreBlur + 2;
+      ctx.fillStyle = this.color;
+      ctx.beginPath();
+      ctx.moveTo(0, -ry);
+      ctx.lineTo(-rx, 0);
+      ctx.lineTo(0,  ry);
+      ctx.lineTo( rx, 0);
+      ctx.closePath();
+      ctx.fill();
+      // subtle tail
+      ctx.lineCap = 'round'; ctx.strokeStyle = this.color; ctx.lineWidth = Math.max(1.5, lineWidth - 1.2);
+      ctx.shadowBlur = Math.max(4, trailBlur - 6);
+      ctx.beginPath(); ctx.moveTo(-Math.max(6, len * 0.4), 0); ctx.lineTo(-rx, 0); ctx.stroke();
+    } else {
+      // fallback classic
+      ctx.lineCap = 'round';
+      ctx.shadowColor = this.color; ctx.shadowBlur = trailBlur;
+      ctx.strokeStyle = this.color; ctx.lineWidth = lineWidth;
+      ctx.beginPath(); ctx.moveTo(-len, 0); ctx.lineTo(0, 0); ctx.stroke();
+      ctx.fillStyle = this.color; ctx.shadowBlur = coreBlur;
+      ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.restore();
   }
 }

@@ -56,13 +56,14 @@ export class FinalAsteroidBoss {
     // Batteries in corners
     const margin = 80;
     this.batteries = [
-      { x: margin, y: margin },
-      { x: canvas.width - margin, y: margin },
-      { x: margin, y: canvas.height - margin },
-      { x: canvas.width - margin, y: canvas.height - margin }
+      // Top-left, Top-right moved down by 150px; Bottom-left, Bottom-right moved up by 150px
+      { x: margin, y: margin + 65 },
+      { x: canvas.width - margin, y: margin + 65 },
+      { x: margin, y: canvas.height - margin - 65 },
+      { x: canvas.width - margin, y: canvas.height - margin - 65 }
     ].map(p => ({
       x: p.x, y: p.y,
-      hits: 4,            // 3 armor + final
+      hits: 5,            // 4 armor + final
       radius: 28,
       pulse: Math.random() * Math.PI * 2,
       hitFlash: 0,
@@ -85,6 +86,31 @@ export class FinalAsteroidBoss {
     // Pre-render heavy visuals to offscreen sprites for performance
     this.initSprites();
 
+    // Laser ember particles (pink glow) for battery beams
+    this.laserEmbers = [];
+    this.laserEmberSprite = null;
+    this.buildLaserEmberSprite();
+
+    // Core ember particles (red glow) similar to Colossus core effect
+    this.coreEmbers = [];
+    this.coreSparkSprite = null;
+    this.buildCoreSparkSprite();
+
+    // Core vulnerable shard-burst state
+    this.coreVulnerable = false; // becomes true when shell is destroyed
+    this.coreShardCooldown = 0;  // frames until next burst
+
+    // Colossus-style rotating slam attack
+    this.slamWarningTimer = 0;
+    this.slamActiveTimer = 0;
+    this.slamAngle = 0; // radians
+    this.slamArc = Math.PI / 4; // 45° arc
+    this.slamCooldown = 180; // frames between slams before telegraph
+    this.slamBandHalfWidth = 75; // thickness of slam arc hit band
+    this.slamBaseOffset = 60; // distance outside outer shell for slam ring (before scaling)
+    this.slamDistanceScale = 0.6; // multiplied by 1.5 per destroyed battery
+    this._prevAliveBatteries = this.batteries ? this.batteries.length : 0;
+
     // Track display metrics for auto-rebuild/reposition on changes
     this._lastCanvasW = canvas.width;
     this._lastCanvasH = canvas.height;
@@ -105,6 +131,7 @@ export class FinalAsteroidBoss {
     if (this.anyBatteriesAlive()) {
       this.shellAngle += this.shellRotateSpeed;
     }
+
     this.coreAngle += this.coreRotateSpeed;
 
     // Animate batteries
@@ -155,6 +182,145 @@ export class FinalAsteroidBoss {
         if (lineCircleCollision(b.x, b.y, x2, y2, player.x, player.y, player.radius)) {
           onPlayerHit && onPlayerHit();
         }
+
+        // Spawn a few pink glowing embers flying off the beam (performance-capped)
+        for (let i = 0; i < 2; i++) {
+          const t = Math.random() * 0.9 + 0.1; // avoid battery origin
+          const sx = b.x + (x2 - b.x) * t;
+          const sy = b.y + (y2 - b.y) * t;
+          // Mostly perpendicular to beam, slight forward drift
+          const npx = -Math.sin(ang);
+          const npy = Math.cos(ang);
+          const perp = (Math.random() - 0.5) * 1.6; // spread
+          const forward = 0.35 + Math.random() * 0.45;
+          const spd = 1.2 + Math.random() * 1.6;
+          const vx = (npx * perp + Math.cos(ang) * forward) * spd;
+          const vy = (npy * perp + Math.sin(ang) * forward) * spd;
+          const life = 22 + (Math.random() * 16) | 0;
+          const size = 0.8 + Math.random() * 0.8;
+          this.laserEmbers.push({ x: sx, y: sy, vx, vy, life, maxLife: life, size });
+        }
+      }
+    }
+
+    // Update and cull embers
+    if (this.laserEmbers.length) {
+      const { canvas } = this.deps;
+      const pad = 24;
+      for (let i = this.laserEmbers.length - 1; i >= 0; i--) {
+        const e = this.laserEmbers[i];
+        e.x += e.vx;
+        e.y += e.vy;
+        e.life--;
+        // Gentle outward acceleration for airy feel
+        e.vx *= 0.99; e.vy *= 0.99;
+        // Culling
+        if (
+          e.life <= 0 ||
+          !canvas || e.x < -pad || e.y < -pad || e.x > (canvas.width + pad) || e.y > (canvas.height + pad)
+        ) {
+          this.laserEmbers.splice(i, 1);
+        }
+      }
+      // Soft cap to avoid runaway
+      if (this.laserEmbers.length > 400) this.laserEmbers.length = 400;
+    }
+
+    // Emit small red core embers from center (always), larger when shell is destroyed
+    {
+      const exposed = (this.shellHits <= 0);
+      const emitCount = exposed ? 2 : (Math.random() < 0.6 ? 1 : 0);
+      for (let i = 0; i < emitCount; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = (0.8 + Math.random() * 1.2) * (exposed ? 1.35 : 1.0);
+        const vx = Math.cos(ang) * spd;
+        const vy = Math.sin(ang) * spd;
+        const life = 20 + (Math.random() * 16) | 0;
+        const scale = (0.45 + Math.random() * 0.5) * (exposed ? 1.5 : 1.0);
+        const alpha = 0.9;
+        this.coreEmbers.push({ x: this.x, y: this.y, vx, vy, life, alpha, scale });
+      }
+    }
+    // Update core embers and cull
+    if (this.coreEmbers.length) {
+      const { canvas } = this.deps;
+      for (let i = this.coreEmbers.length - 1; i >= 0; i--) {
+        const em = this.coreEmbers[i];
+        em.x += em.vx; em.y += em.vy;
+        em.vx *= 0.98; em.vy *= 0.98;
+        em.life--; em.alpha *= 0.96;
+        if (!canvas || em.life <= 0 || em.alpha <= 0.03 || em.x < -24 || em.y < -24 || em.x > canvas.width + 24 || em.y > canvas.height + 24) {
+          this.coreEmbers.splice(i, 1);
+        }
+      }
+      // Soft cap
+      if (this.coreEmbers.length > 240) this.coreEmbers.length = 240;
+    }
+
+    // Core shard-burst attack when core is vulnerable (shell destroyed): 15 red shards every 3s
+    if (this.shellHits <= 0) {
+      if (!this.coreVulnerable) {
+        // Just became vulnerable: immediate burst
+        this.coreVulnerable = true;
+        this.coreShardCooldown = 0;
+      }
+      if (this.coreShardCooldown > 0) this.coreShardCooldown--;
+      if (this.coreHealth > 0 && this.coreShardCooldown === 0) {
+        this.spawnCoreShardBurst();
+        this.coreShardCooldown = 180; // 3 seconds at 60 FPS
+      }
+    } else {
+      // Reset if shell restored (safety)
+      this.coreVulnerable = false;
+      this.coreShardCooldown = 0;
+    }
+
+    // Adjust slam ring distance as batteries are destroyed (each -50% alive => +50% distance)
+    {
+      const alive = this.batteries ? this.batteries.filter(b => b.hits > 0).length : 0;
+      if (this._prevAliveBatteries == null) this._prevAliveBatteries = alive;
+      if (alive < this._prevAliveBatteries) {
+        const delta = this._prevAliveBatteries - alive;
+        for (let i = 0; i < delta; i++) this.slamDistanceScale *= 1.5; // +50% per battery
+        this._prevAliveBatteries = alive;
+      }
+    }
+
+    // Rotating slam: telegraph then strike (similar to Colossus)
+    if (this.slamActiveTimer > 0) {
+      this.slamActiveTimer--;
+      // Damage if player in arc band
+      const { player, onPlayerHit } = this.deps;
+      if (player && typeof onPlayerHit === 'function') {
+        const dx = player.x - this.x, dy = player.y - this.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const ang = Math.atan2(dy, dx);
+        const delta = Math.atan2(Math.sin(ang - this.slamAngle), Math.cos(ang - this.slamAngle));
+        const r = this.getSlamRadius();
+        const inArc = Math.abs(delta) < this.slamArc * 0.5;
+        const band = Math.abs(dist - r) < this.slamBandHalfWidth; // width of the slam band
+        if (inArc && band) {
+          const okInvuln = (player.invulnerable === 0 || player.invulnerable === undefined);
+          const okShield = (player.shielded === 0 || player.shielded === undefined);
+          const okInvis = (player.invisible === 0 || player.invisible === undefined);
+          if (okInvuln && okShield && okInvis) onPlayerHit();
+        }
+      }
+    } else if (this.slamWarningTimer > 0) {
+      this.slamWarningTimer--;
+      if (this.slamWarningTimer === 0) {
+        // Activate slam for a short burst
+        this.slamActiveTimer = 24;
+        if (this.deps.setShake) this.deps.setShake(10, 4);
+      }
+    } else {
+      // Cooldown
+      if (this.slamCooldown > 0) this.slamCooldown--;
+      if (this.slamCooldown === 0) {
+        // Choose new arc angle and telegraph
+        this.slamAngle = Math.random() * Math.PI * 2;
+        this.slamWarningTimer = 36; // wind-up
+        this.slamCooldown = 240; // reset
       }
     }
 
@@ -167,7 +333,7 @@ export class FinalAsteroidBoss {
       }
     }
 
-    // Periodic AttackDrone spawner (every 3s), cap 5 alive, spawn from core location
+    // Periodic AttackDrone spawner (every ~3s), cap 5 alive, spawn from core location
     if (AttackDrone && drones) {
       if (this.attackDroneCooldown > 0) this.attackDroneCooldown--;
       if (this.attackDroneCooldown === 0) {
@@ -228,9 +394,12 @@ export class FinalAsteroidBoss {
   draw() {
     const { ctx, getFrameCount } = this.deps;
     const t = getFrameCount ? getFrameCount() : 0;
+    // Collect active beams to render after boss body so they appear on top
+    const activeBeams = [];
 
     // Rebuild sprites or reposition if DPR or canvas size changed
     this.refreshIfDisplayChanged();
+    const shieldsUp = this.anyBatteriesAlive();
 
     // Batteries first (behind boss body for depth) - use pre-rendered sprites
     for (let b of this.batteries) {
@@ -240,6 +409,26 @@ export class FinalAsteroidBoss {
         ctx.save();
         ctx.translate(b.x, b.y);
         ctx.drawImage(sprite, -sprite.width / (2 * this.dpr), -sprite.height / (2 * this.dpr), sprite.width / this.dpr, sprite.height / this.dpr);
+        ctx.restore();
+      }
+      // Red-hot core indicator: always present, doubles during charge to show which battery will fire
+      {
+        const baseR = Math.max(4, b.radius * 0.18);
+        const r = (b.chargeTimer > 0) ? baseR * 2 : baseR;
+        const pulse = 0.6 + Math.sin(t * 0.2 + b.pulse) * 0.1; // subtle flicker
+        ctx.save();
+        ctx.globalAlpha = 0.9 * pulse;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.shadowBlur = 14;
+        ctx.shadowColor = '#f33';
+        ctx.fillStyle = '#f44';
+        ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, Math.PI * 2); ctx.fill();
+        // inner white-hot point for intensity
+        ctx.globalAlpha = 0.8 * pulse;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = '#fff';
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(b.x, b.y, Math.max(1.5, r * 0.35), 0, Math.PI * 2); ctx.fill();
         ctx.restore();
       }
       // Lightweight hit flash overlay
@@ -263,19 +452,50 @@ export class FinalAsteroidBoss {
         const ang = Math.atan2(b.aimY - b.y, b.aimX - b.x);
         const x2 = b.x + Math.cos(ang) * 2400;
         const y2 = b.y + Math.sin(ang) * 2400;
-        const flicker = 0.75 + Math.random() * 0.25;
-        ctx.globalAlpha = flicker; ctx.shadowBlur = 12 * flicker; ctx.shadowColor = '#f09';
-        ctx.strokeStyle = 'rgba(255,0,128,1)'; ctx.lineWidth = 7;
-        ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(x2, y2); ctx.stroke();
-        // inner core
-        ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(x2, y2); ctx.stroke();
-        ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+        activeBeams.push({ x1: b.x, y1: b.y, x2, y2 });
+      }
+
+      // Energy tether to shell when shields are up (vector glow line)
+      if (shieldsUp && b.hits > 0) {
+        const dx = b.x - this.x, dy = b.y - this.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const nx = dx / dist, ny = dy / dist;
+        const ex = this.x + nx * (this.shellRadius - 2);
+        const ey = this.y + ny * (this.shellRadius - 2);
+        const charge = b.chargeTimer > 0 ? (1 - b.chargeTimer / 90) : 0;
+        const firing = b.fireTimer > 0 ? 1 : 0;
+        const base = 0.25;
+        const a = Math.min(1, base + charge * 0.6 + firing * 0.4);
+        ctx.globalAlpha = a;
+        ctx.shadowBlur = 10 + a * 12;
+        ctx.shadowColor = '#f55';
+        ctx.strokeStyle = '#f55';
+        ctx.lineWidth = 5;
+        ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(ex, ey); ctx.stroke();
+        // Inner white core line for clarity
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(ex, ey); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Shell body (base disc with seams and bulwark), drawn behind segmented ring overlays
+    if (this.shellHits > 0 && this.shellBodySprites) {
+      const key = shieldsUp ? 'up' : 'down';
+      const base = this.shellBodySprites[key];
+      if (!base) this.initSprites();
+      if (this.shellBodySprites[key]) {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.shellAngle);
+        const sprite = this.shellBodySprites[key];
+        ctx.drawImage(sprite, -sprite.width / (2 * this.dpr), -sprite.height / (2 * this.dpr), sprite.width / this.dpr, sprite.height / this.dpr);
+        ctx.restore();
       }
     }
 
     // Boss body shell (use pre-rendered sprite for current state and hits)
-    const shieldsUp = this.anyBatteriesAlive();
     if (this.shellHits > 0) {
       const key = shieldsUp ? 'up' : 'down';
       // Rebuild sprites if current hits variant is missing (e.g., after tuning max hits)
@@ -315,6 +535,50 @@ export class FinalAsteroidBoss {
       ctx.globalAlpha = 1; ctx.shadowBlur = 0;
     }
 
+    // Core embers (red) additive rendering, drawn after core and before beams
+    if (this.coreEmbers && this.coreEmbers.length) {
+      ctx.save();
+      const prevOp = ctx.globalCompositeOperation;
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < this.coreEmbers.length; i++) {
+        const em = this.coreEmbers[i];
+        const s = (this.coreSparkSprite ? (this.coreSparkSprite.width / this.dpr) : 8) * em.scale * 2;
+        ctx.globalAlpha = em.alpha;
+        if (this.coreSparkSprite) {
+          ctx.drawImage(this.coreSparkSprite, em.x - s * 0.5, em.y - s * 0.5, s, s);
+        } else {
+          // Fallback simple red glow
+          ctx.shadowColor = '#f33';
+          ctx.shadowBlur = 10;
+          ctx.fillStyle = 'rgba(255,70,70,0.9)';
+          ctx.beginPath(); ctx.arc(em.x, em.y, s * 0.35, 0, Math.PI * 2); ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+      }
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = prevOp;
+      ctx.restore();
+    }
+
+    // Slam warning/active arc
+    if (this.slamWarningTimer > 0 || this.slamActiveTimer > 0) {
+      const warn = this.slamWarningTimer > 0;
+      const color = warn ? '#ff0' : '#f66';
+      const width = (warn ? 8 : 14) * (this.slamBandHalfWidth / 45);
+      const r = this.getSlamRadius();
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = warn ? 12 : 16;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      const a0 = this.slamAngle - this.slamArc / 2;
+      const a1 = this.slamAngle + this.slamArc / 2;
+      ctx.arc(this.x, this.y, r, a0, a1);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Draw active pulse rings
     if (this.pulses && this.pulses.length) {
       for (const p of this.pulses) {
@@ -328,7 +592,59 @@ export class FinalAsteroidBoss {
       ctx.globalAlpha = 1; ctx.shadowBlur = 0;
     }
 
+    // Draw all active battery beams on top of boss body (core and shell)
+    if (activeBeams.length) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (const beam of activeBeams) {
+        const flicker = 0.75 + Math.random() * 0.25;
+        ctx.globalAlpha = flicker;
+        ctx.shadowBlur = 12 * flicker; ctx.shadowColor = '#f09';
+        ctx.strokeStyle = 'rgba(255,0,128,1)'; ctx.lineWidth = 7;
+        ctx.beginPath(); ctx.moveTo(beam.x1, beam.y1); ctx.lineTo(beam.x2, beam.y2); ctx.stroke();
+        // inner white-hot core
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(beam.x1, beam.y1); ctx.lineTo(beam.x2, beam.y2); ctx.stroke();
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+    }
+
+    // Laser embers (pink) additive rendering after beams and pulses
+    if (this.laserEmbers && this.laserEmbers.length) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (const e of this.laserEmbers) {
+        const prog = 1 - (e.life / e.maxLife);
+        const alpha = Math.max(0, 0.8 * (1 - prog));
+        const scale = (0.9 + e.size * 0.6) * (1 + prog * 0.6);
+        ctx.globalAlpha = alpha;
+        if (this.laserEmberSprite) {
+          const dw = (this.laserEmberSprite.width / this.dpr) * scale * 1.2;
+          const dh = (this.laserEmberSprite.height / this.dpr) * scale * 1.2;
+          ctx.drawImage(this.laserEmberSprite, e.x - dw / 2, e.y - dh / 2, dw, dh);
+        } else {
+          ctx.shadowColor = '#ff66cc';
+          ctx.shadowBlur = 12;
+          ctx.fillStyle = 'rgba(255,80,170,0.8)';
+          ctx.beginPath();
+          ctx.arc(e.x, e.y, 6 * scale, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
     // Nothing else to restore here
+  }
+
+  getSlamRadius() {
+    // Place the slam ring outside the outer shell by a base offset, scaled by destroyed batteries.
+    return this.shellRadius + (this.slamBaseOffset * this.slamDistanceScale);
   }
 
   // --- Sprite pre-render helpers ---
@@ -337,12 +653,16 @@ export class FinalAsteroidBoss {
     this.dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
 
     this.shellSprites = { up: {}, down: {} };
+    this.shellBodySprites = { up: null, down: null };
     this.batterySprites = {};
     this.coreSprite = null;
 
+    this.buildShellBodySprites();
     this.buildShellSprites();
     this.buildBatterySprites();
     this.buildCoreSprite();
+    this.buildLaserEmberSprite();
+    this.buildCoreSparkSprite();
   }
 
   // Detect display changes and rebuild sprites / reposition accordingly
@@ -371,10 +691,11 @@ export class FinalAsteroidBoss {
     // Re-anchor batteries to corners using same margin
     const margin = 80;
     if (this.batteries && this.batteries.length === 4) {
-      this.batteries[0].x = margin;               this.batteries[0].y = margin;
-      this.batteries[1].x = canvas.width - margin; this.batteries[1].y = margin;
-      this.batteries[2].x = margin;               this.batteries[2].y = canvas.height - margin;
-      this.batteries[3].x = canvas.width - margin; this.batteries[3].y = canvas.height - margin;
+      // Apply the same +/-150px vertical offsets on resize
+      this.batteries[0].x = margin;                this.batteries[0].y = margin + 150;
+      this.batteries[1].x = canvas.width - margin; this.batteries[1].y = margin + 150;
+      this.batteries[2].x = margin;                this.batteries[2].y = canvas.height - margin - 150;
+      this.batteries[3].x = canvas.width - margin; this.batteries[3].y = canvas.height - margin - 150;
     }
   }
 
@@ -420,9 +741,72 @@ export class FinalAsteroidBoss {
     }
   }
 
+  buildShellBodySprites() {
+    // Base circular shell body with gradient fill, rim light, subtle seams, and a forward bulwark ring
+    for (const state of ['up', 'down']) {
+      const margin = 28;
+      const size = (this.shellRadius * 2) + margin * 2;
+      const canvas = this.createOffscreen(size, size);
+      if (!canvas) continue;
+      const sctx = canvas.getContext('2d');
+      sctx.save(); sctx.scale(this.dpr, this.dpr); sctx.translate(size / 2, size / 2);
+
+      const R = this.shellRadius - 3;
+      // Radial gradient fill (vector, no texture)
+      const grad = sctx.createRadialGradient(0, 0, 0, 0, 0, R);
+      if (state === 'up') {
+        grad.addColorStop(0.0, '#4a1010');
+        grad.addColorStop(0.55, '#2a0b0b');
+        grad.addColorStop(1.0, '#180606');
+      } else {
+        grad.addColorStop(0.0, '#361036');
+        grad.addColorStop(0.55, '#210921');
+        grad.addColorStop(1.0, '#140514');
+      }
+      sctx.fillStyle = grad;
+      sctx.beginPath(); sctx.arc(0, 0, R, 0, Math.PI * 2); sctx.fill();
+
+      // Rim light
+      sctx.lineWidth = 3.5;
+      sctx.strokeStyle = state === 'up' ? '#ffb0b0' : '#ffb3ff';
+      sctx.globalAlpha = 0.9;
+      sctx.beginPath(); sctx.arc(0, 0, R, 0, Math.PI * 2); sctx.stroke();
+      sctx.globalAlpha = 1;
+
+      // Bulwark ring slightly inside rim
+      sctx.lineWidth = 2;
+      sctx.strokeStyle = state === 'up' ? '#f55' : '#f0f';
+      sctx.globalAlpha = 0.6;
+      sctx.beginPath(); sctx.arc(0, 0, R - 10, 0, Math.PI * 2); sctx.stroke();
+      sctx.globalAlpha = 1;
+
+      // Subtle latitudinal seams
+      sctx.strokeStyle = state === 'up' ? 'rgba(255,120,120,0.2)' : 'rgba(255,120,255,0.22)';
+      sctx.lineWidth = 1;
+      for (let k = 1; k <= 3; k++) {
+        const rr = R - 20 - k * 14;
+        sctx.beginPath(); sctx.arc(0, 0, rr, 0, Math.PI * 2); sctx.stroke();
+      }
+
+      // Subtle radial seams (spokes)
+      sctx.globalAlpha = 0.25;
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2;
+        sctx.beginPath();
+        sctx.moveTo(Math.cos(a) * (R - 28), Math.sin(a) * (R - 28));
+        sctx.lineTo(Math.cos(a) * (R - 6), Math.sin(a) * (R - 6));
+        sctx.stroke();
+      }
+      sctx.globalAlpha = 1;
+
+      sctx.restore();
+      this.shellBodySprites[state] = canvas;
+    }
+  }
+
   buildBatterySprites() {
-    // Build sprites for battery base and armor rings for hits=1..4
-    for (let hits = 1; hits <= 4; hits++) {
+    // Build sprites for battery bases as segmented arc batteries (hits=1..5)
+    for (let hits = 1; hits <= 5; hits++) {
       const margin = 24;
       const radius = 28;
       const size = (radius * 2) + margin * 2;
@@ -431,21 +815,29 @@ export class FinalAsteroidBoss {
       const sctx = canvas.getContext('2d');
       sctx.save(); sctx.scale(this.dpr, this.dpr); sctx.translate(size / 2, size / 2);
       const baseColor = '#f66';
-      // Glow rings (static base)
-      for (let k = 2; k >= 0; k--) {
-        sctx.globalAlpha = k === 0 ? 1 : 0.65;
-        sctx.shadowBlur = 14 - k * 4;
-        sctx.shadowColor = baseColor;
-        sctx.strokeStyle = baseColor;
-        sctx.lineWidth = k === 0 ? 2.5 : 1.2;
-        sctx.beginPath(); sctx.arc(0, 0, radius - k * 3, 0, Math.PI * 2); sctx.stroke();
+
+      // Outer glow ring
+      sctx.globalAlpha = 0.9; sctx.shadowBlur = 10; sctx.shadowColor = baseColor; sctx.strokeStyle = baseColor; sctx.lineWidth = 2.5;
+      sctx.beginPath(); sctx.arc(0, 0, radius - 1, 0, Math.PI * 2); sctx.stroke();
+      sctx.shadowBlur = 0; sctx.globalAlpha = 1;
+
+      // Segmented battery arcs (5 segments around)
+      const segs = 5; const span = (Math.PI * 2) / segs; const r = radius - 8;
+      for (let i = 0; i < segs; i++) {
+        const a0 = (i * span) - Math.PI / 2; // start at top
+        const isLit = i < hits;
+        sctx.strokeStyle = isLit ? '#fff' : 'rgba(255,255,255,0.25)';
+        sctx.lineWidth = isLit ? 3 : 1.5;
+        sctx.globalAlpha = isLit ? 1 : 0.9;
+        sctx.beginPath(); sctx.arc(0, 0, r, a0 + span * 0.12, a0 + span * 0.88); sctx.stroke();
       }
-      // Armor rings for remaining hits (up to 3 armor + final state)
-      sctx.globalAlpha = 0.95; sctx.shadowBlur = 0; sctx.lineWidth = 1; sctx.strokeStyle = '#fff';
-      const armorRings = Math.min(3, Math.max(0, hits - 1));
-      for (let h = 0; h < armorRings; h++) {
-        sctx.beginPath(); sctx.arc(0, 0, radius - 8 - h * 4, 0, Math.PI * 2); sctx.stroke();
-      }
+      sctx.globalAlpha = 1;
+
+      // Crosshair detail
+      sctx.strokeStyle = 'rgba(255,255,255,0.75)'; sctx.lineWidth = 1;
+      sctx.beginPath(); sctx.moveTo(-8, 0); sctx.lineTo(8, 0); sctx.stroke();
+      sctx.beginPath(); sctx.moveTo(0, -8); sctx.lineTo(0, 8); sctx.stroke();
+
       sctx.restore(); sctx.globalAlpha = 1; sctx.shadowBlur = 0;
       this.batterySprites[hits] = canvas;
     }
@@ -458,19 +850,155 @@ export class FinalAsteroidBoss {
     if (!canvas) return;
     const sctx = canvas.getContext('2d');
     sctx.save(); sctx.scale(this.dpr, this.dpr); sctx.translate(size / 2, size / 2);
-    sctx.shadowColor = '#f55'; sctx.shadowBlur = 20;
-    // Hot red core disc
-    sctx.fillStyle = '#b00';
-    sctx.beginPath(); sctx.arc(0, 0, this.coreRadius * 0.7, 0, Math.PI * 2); sctx.fill();
-    // Pale outline
-    sctx.lineWidth = 4; sctx.strokeStyle = '#ffb3b3'; sctx.beginPath(); sctx.arc(0, 0, this.coreRadius * 0.72, 0, Math.PI * 2); sctx.stroke();
-    sctx.restore(); sctx.shadowBlur = 0; sctx.globalAlpha = 1;
+
+    const R = this.coreRadius * 0.8;
+    // Radial gradient core (vector)
+    const g = sctx.createRadialGradient(0, 0, 0, 0, 0, R);
+    g.addColorStop(0.0, '#ffffff');
+    g.addColorStop(0.18, '#ffd6d6');
+    g.addColorStop(0.55, '#ff6666');
+    g.addColorStop(0.95, '#8a1616');
+    g.addColorStop(1.0, '#3a0a0a');
+    sctx.fillStyle = g;
+    sctx.shadowColor = '#f55'; sctx.shadowBlur = 18;
+    sctx.beginPath(); sctx.arc(0, 0, R, 0, Math.PI * 2); sctx.fill();
+    sctx.shadowBlur = 0;
+
+    // Rim highlight
+    sctx.lineWidth = 3; sctx.strokeStyle = '#ffb3b3';
+    sctx.beginPath(); sctx.arc(0, 0, R * 1.02, 0, Math.PI * 2); sctx.stroke();
+
+    // Subtle internal spokes/glints
+    sctx.globalAlpha = 0.25; sctx.strokeStyle = 'rgba(255,255,255,0.8)'; sctx.lineWidth = 1;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      sctx.beginPath();
+      sctx.moveTo(Math.cos(a) * (R * 0.3), Math.sin(a) * (R * 0.3));
+      sctx.lineTo(Math.cos(a) * (R * 0.85), Math.sin(a) * (R * 0.85));
+      sctx.stroke();
+    }
+    sctx.globalAlpha = 1;
+
+    // Star glint cross
+    sctx.strokeStyle = 'rgba(255,255,255,0.9)'; sctx.lineWidth = 1.5;
+    sctx.beginPath(); sctx.moveTo(-R * 0.15, 0); sctx.lineTo(R * 0.15, 0); sctx.stroke();
+    sctx.beginPath(); sctx.moveTo(0, -R * 0.15); sctx.lineTo(0, R * 0.15); sctx.stroke();
+
+    sctx.restore(); sctx.globalAlpha = 1; sctx.shadowBlur = 0;
     this.coreSprite = canvas;
+  }
+
+  // Build small red/white spark sprite used by core ember particles
+  buildCoreSparkSprite() {
+    const size = 14;
+    const c = this.createOffscreen(size, size);
+    if (!c) { this.coreSparkSprite = null; return; }
+    const g = c.getContext('2d');
+    g.save();
+    g.scale(this.dpr, this.dpr);
+    g.translate(size / 2, size / 2);
+    // Outer red glow
+    g.shadowBlur = 8; g.shadowColor = '#f33';
+    g.fillStyle = 'rgba(255,80,80,0.8)';
+    g.beginPath(); g.arc(0, 0, 3.6, 0, Math.PI * 2); g.fill();
+    // Inner white hot
+    g.shadowBlur = 0;
+    g.fillStyle = 'rgba(255,255,255,0.95)';
+    g.beginPath(); g.arc(0, 0, 1.3, 0, Math.PI * 2); g.fill();
+    g.restore();
+    this.coreSparkSprite = c;
+  }
+
+  // Build cached pink ember sprite for additive glow rendering
+  buildLaserEmberSprite() {
+    const size = 16;
+    const c = this.createOffscreen(size, size);
+    if (!c) { this.laserEmberSprite = null; return; }
+    const sctx = c.getContext('2d');
+    sctx.save();
+    sctx.scale(this.dpr, this.dpr);
+    sctx.translate(size / 2, size / 2);
+    // Outer soft glow
+    sctx.shadowBlur = 8; sctx.shadowColor = '#ff66cc';
+    sctx.fillStyle = 'rgba(255,80,170,0.75)';
+    sctx.beginPath(); sctx.arc(0, 0, 4, 0, Math.PI * 2); sctx.fill();
+    // Inner hot core
+    sctx.shadowBlur = 0;
+    sctx.fillStyle = 'rgba(255,255,255,0.95)';
+    sctx.beginPath(); sctx.arc(0, 0, 1.4, 0, Math.PI * 2); sctx.fill();
+    sctx.restore();
+    this.laserEmberSprite = c;
+  }
+
+  // --- Core shard-burst helpers (red variant, inspired by Colossus) ---
+  makeRedShardBullet(x, y, angle, speed = 2.6) {
+    const vx = Math.cos(angle) * speed;
+    const vy = Math.sin(angle) * speed;
+    const verts = 6 + Math.floor(Math.random() * 4); // 6-9 vertices
+    const angles = [];
+    const radii = [];
+    for (let i = 0; i < verts; i++) {
+      const baseA = (i / verts) * Math.PI * 2;
+      angles.push(baseA + (Math.random() - 0.5) * 0.35);
+      radii.push(5 + Math.random() * 5); // 5..10 px
+    }
+    const slim = 0.55 + Math.random() * 0.15; // slim profile
+    const spin = (0.012 + Math.random() * 0.02); // positive => clockwise in canvas
+    return {
+      x, y, vx, vy,
+      radius: 6,
+      lifetime: 240,
+      _angle: angle,
+      _spin: spin,
+      update(canvas) {
+        this.x += this.vx;
+        this.y += this.vy;
+        this._angle += this._spin;
+        this.lifetime--;
+        if (this.x < -30 || this.x > canvas.width + 30 || this.y < -30 || this.y > canvas.height + 30) this.lifetime = 0;
+      },
+      draw(ctx) {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this._angle);
+        ctx.scale(slim, 1);
+        // Red glow
+        ctx.globalAlpha = 1;
+        ctx.shadowColor = '#f55';
+        ctx.shadowBlur = 16;
+        // Filled jagged red shard
+        ctx.fillStyle = 'rgba(255,90,90,0.95)';
+        ctx.beginPath();
+        for (let i = 0; i < angles.length; i++) {
+          const ax = Math.cos(angles[i]) * radii[i];
+          const ay = Math.sin(angles[i]) * radii[i];
+          if (i === 0) ctx.moveTo(ax, ay); else ctx.lineTo(ax, ay);
+        }
+        ctx.closePath();
+        ctx.fill();
+        // Edge definition (light red)
+        ctx.shadowBlur = 0;
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(255,150,150,0.9)';
+        ctx.stroke();
+        ctx.restore();
+      },
+    };
+  }
+
+  spawnCoreShardBurst() {
+    const { enemyBullets } = this.deps;
+    if (!enemyBullets) return;
+    const count = 15;
+    for (let i = 0; i < count; i++) {
+      const a = (Math.PI * 2 * i) / count; // 360 degrees
+      enemyBullets.push(this.makeRedShardBullet(this.x, this.y, a, 2.6));
+    }
   }
 
   // Collisions: bullets
   handleBulletCollision(bullet) {
-    const { createExplosion, drones, Drone, showHUDMessage, getFrameCount } = this.deps;
+    const { createExplosion, drones, Drone, showHUDMessage, getFrameCount, powerups, Powerup, applyShockwave, setShake } = this.deps;
 
     // Batteries first (allow sniping batteries)
     for (let b of this.batteries) {
@@ -484,7 +1012,10 @@ export class FinalAsteroidBoss {
           createExplosion(b.x, b.y, 3, '#f66', 'micro');
         }
         if (b.hits <= 0) {
-          createExplosion && createExplosion(b.x, b.y, 70, '#f88');
+          // Large red explosion and local shockwave on battery destruction
+          createExplosion && createExplosion(b.x, b.y, 120, '#f55');
+          if (applyShockwave) applyShockwave(b.x, b.y, 260, 6);
+          if (setShake) setShake(10, 5);
           // cancel any active charge/fire
           b.chargeTimer = 0; b.fireTimer = 0;
           // spawn a hostile drone
@@ -492,6 +1023,15 @@ export class FinalAsteroidBoss {
             const d = new Drone(b.x, b.y);
             drones.push(d);
           }
+          // Battery power-up drop (Level 15 boss): 30% chance
+          if (powerups && Powerup && powerups.length < 4) {
+            if (Math.random() < 0.3) {
+              const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
+              const type = types[(Math.random() * types.length) | 0];
+              powerups.push(new Powerup(b.x, b.y, type));
+            }
+          }
+
           // If that was the last battery, announce
           if (!this.anyBatteriesAlive()) {
             showHUDMessage && showHUDMessage('SHIELDS DOWN!', 180);
@@ -574,7 +1114,7 @@ export class FinalAsteroidBoss {
 
   // Particle (bomb/flak) damage area interaction
   handleParticleDamage(particle) {
-    const { createExplosion } = this.deps;
+    const { createExplosion, applyShockwave, setShake } = this.deps;
     let hit = false;
     for (let b of this.batteries) {
       if (b.hits <= 0) continue;
@@ -585,7 +1125,13 @@ export class FinalAsteroidBoss {
           if (b.hits > 0 && createExplosion) {
             createExplosion(b.x, b.y, 3, '#f66', 'micro');
           }
-          if (b.hits <= 0) { createExplosion && createExplosion(b.x, b.y, 70, '#f88'); b.chargeTimer = 0; b.fireTimer = 0; }
+          if (b.hits <= 0) { 
+            // Large red explosion and local shockwave on battery destruction
+            createExplosion && createExplosion(b.x, b.y, 120, '#f55');
+            if (applyShockwave) applyShockwave(b.x, b.y, 260, 6);
+            if (setShake) setShake(10, 5);
+            b.chargeTimer = 0; b.fireTimer = 0; 
+          }
         } else { hit = true; }
         break;
       }
@@ -610,9 +1156,61 @@ export class FinalAsteroidBoss {
     }
   }
 
+  // Radial explosion damage (e.g., player bomb). Damages batteries in radius,
+  // then shell when shields are down, then core when shell is destroyed.
+  hitByExplosion(cx, cy, radius) {
+    const { createExplosion, applyShockwave, setShake } = this.deps;
+    let any = false;
+    // Batteries first
+    for (let b of this.batteries) {
+      if (b.hits <= 0) continue;
+      const dx = b.x - cx, dy = b.y - cy;
+      if (Math.hypot(dx, dy) <= radius + b.radius) {
+        any = true;
+        if (this.spawnInvuln <= 0) {
+          b.hits--; b.hitFlash = 8;
+          if (b.hits > 0 && createExplosion) {
+            createExplosion(b.x, b.y, 3, '#f66', 'micro');
+          }
+          if (b.hits <= 0) {
+            createExplosion && createExplosion(b.x, b.y, 120, '#f55');
+            if (applyShockwave) applyShockwave(b.x, b.y, 260, 6);
+            if (setShake) setShake(10, 5);
+            b.chargeTimer = 0; b.fireTimer = 0;
+          }
+        }
+      }
+    }
+    // Shell (only when shields are down)
+    if (!this.anyBatteriesAlive() && this.shellHits > 0) {
+      const dx = this.x - cx, dy = this.y - cy;
+      if (Math.hypot(dx, dy) <= radius + this.shellRadius) {
+        any = true;
+        if (this.spawnInvuln <= 0) {
+          this.shellHits = Math.max(0, this.shellHits - 1);
+          if (this.shellHits === 0) {
+            this.deps.showHUDMessage && this.deps.showHUDMessage('CORE EXPOSED!', 180);
+          }
+        }
+      }
+    }
+    // Core (only when shell destroyed)
+    if (this.shellHits <= 0) {
+      const dx = this.x - cx, dy = this.y - cy;
+      if (Math.hypot(dx, dy) <= radius + this.coreRadius) {
+        any = true;
+        if (this.spawnInvuln <= 0) {
+          this.coreHealth = Math.max(0, this.coreHealth - 1);
+          if (this.coreHealth === 0) this.onDefeated();
+        }
+      }
+    }
+    return any;
+  }
+
   // Player laser line damage
   hitByLaserLine(x1, y1, x2, y2) {
-    const { lineCircleCollision, createExplosion } = this.deps;
+    const { lineCircleCollision, createExplosion, applyShockwave, setShake } = this.deps;
     let any = false;
     for (let b of this.batteries) {
       if (b.hits > 0 && lineCircleCollision(x1, y1, x2, y2, b.x, b.y, b.radius)) {
@@ -622,7 +1220,13 @@ export class FinalAsteroidBoss {
           if (b.hits > 0 && createExplosion) {
             createExplosion(b.x, b.y, 3, '#f66', 'micro');
           }
-          if (b.hits <= 0) { createExplosion && createExplosion(b.x, b.y, 70, '#f88'); b.chargeTimer = 0; b.fireTimer = 0; }
+          if (b.hits <= 0) { 
+            // Large red explosion and local shockwave on battery destruction
+            createExplosion && createExplosion(b.x, b.y, 120, '#f55');
+            if (applyShockwave) applyShockwave(b.x, b.y, 260, 6);
+            if (setShake) setShake(10, 5);
+            b.chargeTimer = 0; b.fireTimer = 0; 
+          }
         }
       }
     }
@@ -653,11 +1257,31 @@ export class FinalAsteroidBoss {
 
   onDefeated() {
     if (this.defeated) return;
-    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints } = this.deps;
+    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints, applyShockwave } = this.deps;
     this.defeated = true;
     createExplosion && createExplosion(this.x, this.y, this.shellRadius * 3, '#ffaaaa');
     setShake && setShake(28, 10);
     awardPoints && awardPoints(1200, this.x, this.y, true);
+    // Massive arena shockwave push for dramatic finish
+    if (applyShockwave) applyShockwave(this.x, this.y, Math.max(800, this.shellRadius * 6), 12);
+    // Ember/shockwave trails: ring of micro-explosions around the boss
+    if (createExplosion) {
+      const rings = 2;
+      for (let rIdx = 0; rIdx < rings; rIdx++) {
+        const count = 12 + rIdx * 6;
+        const baseR = this.shellRadius * (1.6 + rIdx * 0.5);
+        for (let i = 0; i < count; i++) {
+          const ang = (i / count) * Math.PI * 2;
+          const jitter = (Math.random() - 0.5) * 24;
+          const rr = baseR + jitter;
+          const ex = this.x + Math.cos(ang) * rr;
+          const ey = this.y + Math.sin(ang) * rr;
+          createExplosion(ex, ey, 36 + ((Math.random() * 18) | 0), '#ffaa99', 'micro');
+        }
+      }
+    }
+    // Victory HUD message
+    if (this.deps.showHUDMessage) this.deps.showHUDMessage('Congratulations you have defeated the asteroids!', 300);
     if (enemyBullets) enemyBullets.length = 0;
     if (drones) drones.length = 0;
     // celebratory drops
@@ -673,5 +1297,7 @@ export class FinalAsteroidBoss {
         if (powerups.length < 4) powerups.push(new Powerup(dx, dy, type));
       }
     }
+    // EXP: Award 900 EXP for defeating Final Asteroid boss
+    if (this.deps.addEXP) this.deps.addEXP(900, 'boss-finalasteroid');
   }
 }
