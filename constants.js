@@ -12,7 +12,7 @@ export const WEBGL_RENDER_SCALE = 1.0;
 
 // Post-processing (CRT-style) defaults — tunable at build time
 // Scanline/CRT
-export const SCANLINE_ENABLED = false;
+export const SCANLINE_ENABLED = true;
 export const SCANLINE_LINE_WIDTH = 1.0;      // thickness of scanlines (px in filter space)
 export const SCANLINE_CONTRAST = 0.06;       // darkness/contrast of lines (0..1)
 export const SCANLINE_VERTICAL = false;      // vertical lines instead of horizontal

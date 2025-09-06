@@ -67,7 +67,7 @@ export class Particle {
     this.radius = Math.random() * 3 + 1;
     this.damaging = false; // for rainbow trail damage
     // Extended visuals
-    this.shape = 'dot'; // 'dot' | 'ring' | 'shard'
+    this.shape = 'dot'; // 'dot' | 'ring' | 'shard' | 'diamond'
     this.rotation = Math.random() * Math.PI * 2;
     this.angularVel = (Math.random() - 0.5) * 0.2;
     this.length = 8;
@@ -140,6 +140,22 @@ export class Particle {
       ctx.moveTo(-this.length * 0.5, 0);
       ctx.lineTo(this.length * 0.5, 0);
       ctx.stroke();
+      ctx.restore();
+    } else if (this.shape === 'diamond') {
+      // filled rotated square (diamond)
+      ctx.shadowBlur = this.glow * 0.7;
+      ctx.fillStyle = this.color;
+      const r = this.radius || 2;
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rotation || Math.PI / 4);
+      ctx.beginPath();
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r, 0);
+      ctx.lineTo(0, r);
+      ctx.lineTo(-r, 0);
+      ctx.closePath();
+      ctx.fill();
       ctx.restore();
     } else if (this.shape === 'dot') {
       // dot

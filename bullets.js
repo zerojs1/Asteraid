@@ -111,6 +111,28 @@ function getBulletSprite(chargeLevel, radius, color, variant = 'classic') {
     ctx.shadowBlur = Math.max(4, trailBlur - 6);
     ctx.beginPath(); ctx.moveTo(xStart + Math.max(4, len * 0.6), yMid); ctx.lineTo(cx - rx, yMid); ctx.stroke();
     ctx.restore();
+  } else if (v === 'needle') {
+    // Elongated sharp needle with bright glow
+    const base = xEnd - Math.max(10, len * 0.75);
+    const half = Math.max(1.2, radius * 0.9);
+    // Faint elongated tail
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.shadowColor = color; ctx.shadowBlur = Math.max(10, trailBlur);
+    ctx.strokeStyle = color; ctx.lineWidth = Math.max(1.2, lineWidth - 1.0);
+    ctx.beginPath(); ctx.moveTo(xStart + 2, yMid); ctx.lineTo(base, yMid); ctx.stroke();
+    ctx.restore();
+    // Tapered needle tip with slight center notch
+    ctx.save();
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = coreBlur + 6;
+    ctx.beginPath();
+    ctx.moveTo(xEnd, yMid);        // tip
+    ctx.lineTo(base, yMid - half); // upper base
+    ctx.lineTo(base - 2, yMid);    // notch
+    ctx.lineTo(base, yMid + half); // lower base
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   } else {
     // Fallback to classic
     ctx.save();
@@ -148,6 +170,12 @@ export class Bullet {
     this.charged = this.chargeLevel > 0; // legacy flag
     const baseRadius = this.chargeLevel === 0 ? 4 : (this.chargeLevel === 1 ? 8 : 12);
     this.radius = this.charged ? baseRadius * CHARGED_SIZE_MUL : baseRadius;
+    // Apex Rounds: globally boost bullet size by +30% for player bullets
+    try {
+      if (typeof window !== 'undefined' && window.__apexRoundsEnabled) {
+        this.radius *= 1.3;
+      }
+    } catch (e) {}
     this.speed = 10;
     this.vx = Math.cos(angle) * this.speed;
     this.vy = Math.sin(angle) * this.speed;
@@ -157,6 +185,16 @@ export class Bullet {
     this.variant = 'classic'; // can be overridden per-skin by caller
     // Optional property used by warp tunnels logic externally
     this.warpCooldown = 0;
+    // Optional piercing support (set externally by reward systems):
+    // If > 0, the bullet will not be removed on hit; instead this counter is
+    // decremented and a small lifetime penalty is applied to prevent infinite travel.
+    this.piercesLeft = 0; // number of additional targets this bullet can pass through
+    this.pierceLifetimePenalty = 6; // frames deducted per pierce
+
+    // Lightweight trail storage (used for specific variants like 'flak').
+    // We lazily initialize and update this only when needed for performance.
+    this._trail = null; // array of {x,y}
+    this._trailStep = 0;
   }
 
   update(canvas, level, applyGravityTo) {
@@ -168,6 +206,18 @@ export class Bullet {
     this.y += this.vy;
     this.lifetime--;
 
+    // Sample trail history only for flak variant to minimize overhead
+    if (this.variant === 'flak') {
+      if (!this._trail) this._trail = [];
+      this._trailStep = (this._trailStep + 1) | 0;
+      // record every 2 frames for smoother, cheaper trails
+      if ((this._trailStep & 1) === 0) {
+        this._trail.unshift({ x: this.x, y: this.y });
+        // Cap to a small buffer for perf (about ~16 samples ~ last 32 frames)
+        if (this._trail.length > 16) this._trail.length = 16;
+      }
+    }
+
     // Despawn off-screen (no wrapping)
     if (
       this.x < 0 || this.x > canvas.width ||
@@ -178,6 +228,32 @@ export class Bullet {
   }
 
   draw(ctx) {
+    // Draw long fading trail for flak variant in world coords (no transforms)
+    if (this.variant === 'flak' && this._trail && this._trail.length > 1) {
+      const n = this._trail.length;
+      ctx.save();
+      ctx.lineCap = 'round';
+      for (let i = 0; i < n - 1; i++) {
+        const p0 = this._trail[i + 1];
+        const p1 = this._trail[i];
+        const t = i / (n - 1);
+        // Quadratic fade for smoother tail
+        const alpha = (1 - t) * (1 - t) * 0.7;
+        const blur = 2 + (1 - t) * 10;
+        const lw = Math.max(0.8, this.radius * (0.35 + (1 - t) * 0.45));
+        ctx.globalAlpha = alpha;
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur = blur;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = lw;
+        ctx.beginPath();
+        ctx.moveTo(p0.x, p0.y);
+        ctx.lineTo(p1.x, p1.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     if (ENABLE_SPRITE_CACHE) {
       const sprite = getBulletSprite(this.chargeLevel, this.radius, this.color, this.variant || 'classic');
       const angle = Math.atan2(this.vy, this.vx);
@@ -185,6 +261,49 @@ export class Bullet {
       ctx.translate(this.x, this.y);
       ctx.rotate(angle);
       ctx.drawImage(sprite.img, -sprite.ax, -sprite.ay);
+      // Apex Rounds boosted overlay (only while bullet can pierce)
+      if (typeof window !== 'undefined' && window.__apexRoundsEnabled && this.piercesLeft > 0) {
+        ctx.save();
+        // Colored additive trail extension (behind core)
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = this.color;
+        ctx.globalAlpha = 0.6;
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur = 16;
+        ctx.lineWidth = Math.max(1.4, this.radius * 0.9);
+        ctx.beginPath();
+        ctx.moveTo(-Math.max(18, this.radius * 3.2), 0);
+        ctx.lineTo(-Math.max(3, this.radius * 0.8), 0);
+        ctx.stroke();
+
+        // brighter, longer white streak behind the core
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#ffffff';
+        ctx.globalAlpha = 0.8;
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 18;
+        ctx.lineWidth = Math.max(1.6, this.radius * 1.0);
+        ctx.beginPath();
+        ctx.moveTo(-Math.max(24, this.radius * 3.8), 0);
+        ctx.lineTo(-Math.max(6, this.radius * 1.2), 0);
+        ctx.stroke();
+        // bright inner core accent with stronger glow
+        ctx.fillStyle = '#ffffff';
+        ctx.globalAlpha = 0.95;
+        ctx.shadowBlur = 16;
+        ctx.beginPath();
+        ctx.arc(0, 0, Math.max(1.8, this.radius * 0.7), 0, Math.PI * 2);
+        ctx.fill();
+        // faint outer glow ring
+        ctx.globalAlpha = 0.55;
+        ctx.shadowBlur = 14;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = Math.max(0.9, this.radius * 0.45);
+        ctx.beginPath();
+        ctx.arc(0, 0, Math.max(2.6, this.radius * 1.05), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
       ctx.restore();
       return;
     }
@@ -205,6 +324,16 @@ export class Bullet {
       ctx.beginPath(); ctx.moveTo(-len, 0); ctx.lineTo(0, 0); ctx.stroke();
       ctx.fillStyle = this.color; ctx.shadowBlur = coreBlur;
       ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
+    } else if (v === 'flak') {
+      // Brighter core and short local tail; long global tail is drawn above
+      ctx.lineCap = 'round';
+      ctx.shadowColor = this.color; ctx.shadowBlur = Math.max(coreBlur, 22);
+      ctx.fillStyle = this.color;
+      ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
+      // subtle local tail
+      ctx.strokeStyle = this.color; ctx.shadowBlur = Math.max(8, trailBlur);
+      ctx.lineWidth = Math.max(2, lineWidth);
+      ctx.beginPath(); ctx.moveTo(-Math.max(10, len * 0.7), 0); ctx.lineTo(-2, 0); ctx.stroke();
     } else if (v === 'dash') {
       const d = Math.max(6, len * 0.5);
       ctx.lineCap = 'round';
@@ -251,6 +380,24 @@ export class Bullet {
       ctx.lineCap = 'round'; ctx.strokeStyle = this.color; ctx.lineWidth = Math.max(1.5, lineWidth - 1.2);
       ctx.shadowBlur = Math.max(4, trailBlur - 6);
       ctx.beginPath(); ctx.moveTo(-Math.max(6, len * 0.4), 0); ctx.lineTo(-rx, 0); ctx.stroke();
+    } else if (v === 'needle') {
+      // Elongated sharp needle
+      const base = -Math.max(10, len * 0.75);
+      const half = Math.max(1.2, this.radius * 0.9);
+      // Tail
+      ctx.lineCap = 'round';
+      ctx.shadowColor = this.color; ctx.shadowBlur = Math.max(10, trailBlur);
+      ctx.strokeStyle = this.color; ctx.lineWidth = Math.max(1.2, lineWidth - 1.0);
+      ctx.beginPath(); ctx.moveTo(base, 0); ctx.lineTo(-2, 0); ctx.stroke();
+      // Tip
+      ctx.fillStyle = this.color; ctx.shadowBlur = coreBlur + 6;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(base, -half);
+      ctx.lineTo(base - 2, 0);
+      ctx.lineTo(base,  half);
+      ctx.closePath();
+      ctx.fill();
     } else {
       // fallback classic
       ctx.lineCap = 'round';
@@ -259,6 +406,45 @@ export class Bullet {
       ctx.beginPath(); ctx.moveTo(-len, 0); ctx.lineTo(0, 0); ctx.stroke();
       ctx.fillStyle = this.color; ctx.shadowBlur = coreBlur;
       ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
+    }
+    // Apex Rounds boosted overlay (only while bullet can pierce)
+    if (typeof window !== 'undefined' && window.__apexRoundsEnabled && this.piercesLeft > 0) {
+      // Colored additive trail extension
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = this.color;
+      ctx.globalAlpha = 0.6;
+      ctx.shadowColor = this.color;
+      ctx.shadowBlur = 16;
+      ctx.lineWidth = Math.max(1.4, this.radius * 0.9);
+      ctx.beginPath();
+      ctx.moveTo(-Math.max(18, len * 1.2), 0);
+      ctx.lineTo(-Math.max(3, len * 0.2), 0);
+      ctx.stroke();
+      // brighter, longer white streak behind the core
+      ctx.strokeStyle = '#ffffff';
+      ctx.globalAlpha = 0.8;
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur = 18;
+      ctx.lineWidth = Math.max(1.6, this.radius * 1.0);
+      ctx.beginPath();
+      ctx.moveTo(-Math.max(24, len * 1.9), 0);
+      ctx.lineTo(-Math.max(6, len * 0.3), 0);
+      ctx.stroke();
+      // bright inner core accent
+      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = 0.95;
+      ctx.shadowBlur = 16;
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.max(1.8, this.radius * 0.7), 0, Math.PI * 2);
+      ctx.fill();
+      // faint outer glow ring
+      ctx.globalAlpha = 0.55;
+      ctx.shadowBlur = 14;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(0.9, this.radius * 0.45);
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.max(2.6, this.radius * 1.05), 0, Math.PI * 2);
+      ctx.stroke();
     }
     ctx.restore();
   }

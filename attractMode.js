@@ -181,7 +181,7 @@ export class AttractMode {
     } catch (_) {}
     // Priority orders (mirror ast.html)
     const SKIN_PRIORITY = ['skin_aurora','skin_arctic','skin_midnight','skin_gold','skin_crimson','skin_vaporwave','skin_emerald','skin_cobalt'];
-    const TRAIL_PRIORITY = ['trail_ember','trail_plasma','trail_mint','trail_stardust','trail_iceBlue','trail_sunset','trail_neonPurple'];
+    const TRAIL_PRIORITY = ['trail_colossus','trail_crystaltitan','trail_ember','trail_plasma','trail_mint','trail_stardust','trail_iceBlue','trail_sunset','trail_neonPurple'];
 
     const highestUnlocked = (order) => {
       for (const id of order) if (unlocked.has(id)) return id;
@@ -232,6 +232,8 @@ export class AttractMode {
         } else if (trailId === 'trail_mint') trailColor = '#6fffc1';
         else if (trailId === 'trail_plasma') trailColor = '#ff4fd6';
         else if (trailId === 'trail_ember') trailColor = '#ff8a2b';
+        else if (trailId === 'trail_colossus') trailColor = '#ff6666';
+        else if (trailId === 'trail_crystaltitan') trailColor = '#9fe3ff';
         ctx.shadowColor = trailColor;
         ctx.strokeStyle = trailColor;
         ctx.lineWidth = (trailId === 'trail_plasma') ? 3 : 2;
@@ -357,6 +359,34 @@ export class AttractMode {
           const engineX = this.flyby.x - cosA * 12;
           const engineY = this.flyby.y - sinA * 12;
           switch (trailId) {
+            case 'trail_colossus': {
+              // Red and pale pink embers; occasional outward embers; no rings
+              if (this.rng() < 0.5) {
+                for (let i = 0; i < 2; i++) {
+                  const col = (Math.random() < 0.5) ? '#ff3b3b' : '#ffd0e0';
+                  const p = new Particle(
+                    engineX,
+                    engineY,
+                    -cosA * (1.2 + Math.random() * 0.8) + (Math.random() - 0.5) * 0.45,
+                    -sinA * (1.2 + Math.random() * 0.8) + (Math.random() - 0.5) * 0.45,
+                    col,
+                    48 + Math.random() * 21
+                  );
+                  p.glow = 16;
+                  p.radius = 1.9 + Math.random() * 1.7;
+                  p.noWrap = true;
+                  this.particles.push(p);
+                }
+              }
+              if (this.rng() < 0.5) {
+                const a = Math.random() * Math.PI * 2;
+                const sp = 1.2 + Math.random() * 1.2;
+                const q = new Particle(engineX, engineY, Math.cos(a) * sp, Math.sin(a) * sp, '#ff5555', 36 + Math.random() * 20);
+                q.glow = 10; q.radius = 1.4 + Math.random() * 1.0; q.noWrap = true;
+                this.particles.push(q);
+              }
+              break;
+            }
             case 'trail_ember': {
               // Average ~1 ember per frame (2 every ~2 frames), occasional ring (~1/6 per frame)
               if (this.rng() < 0.5) {
@@ -384,6 +414,33 @@ export class AttractMode {
                 r.thickness = 2;
                 r.glow = 18;
                 this.particles.push(r);
+              }
+              break;
+            }
+            case 'trail_crystaltitan': {
+              // White/cyan shard + cyan embers; no rings
+              const s = new Particle(
+                engineX,
+                engineY,
+                -cosA * 0.5 + (Math.random() - 0.5) * 0.25,
+                -sinA * 0.5 + (Math.random() - 0.5) * 0.25,
+                (Math.random() < 0.5 ? '#ffffff' : '#9fe3ff'),
+                30
+              );
+              s.shape = 'shard';
+              s.length = 14 + Math.random() * 10;
+              s.thickness = 2;
+              s.glow = 18;
+              s.rotation = ang + Math.PI;
+              s.angularVel = 0.01 * (Math.random() - 0.5);
+              s.noWrap = true;
+              this.particles.push(s);
+              if (this.rng() < 0.6) {
+                const a = Math.random() * Math.PI * 2;
+                const sp = 0.9 + Math.random() * 1.0;
+                const p = new Particle(engineX, engineY, Math.cos(a) * sp, Math.sin(a) * sp, '#9fe3ff', 24 + Math.random() * 12);
+                p.glow = 10; p.radius = 1.2 + Math.random() * 1.1; p.noWrap = true;
+                this.particles.push(p);
               }
               break;
             }

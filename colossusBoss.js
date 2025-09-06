@@ -12,6 +12,7 @@
 //   SHARD_MINION_CAP,
 //   getFrameCount: () => number,
 //   addEXP?: (amount: number, source?: string) => void,
+//   unlockReward?: (id: string) => boolean,
 // }
 
 export class ColossusBoss {
@@ -35,10 +36,6 @@ export class ColossusBoss {
       const variance = 0.85 + Math.random() * 0.3;
       this.coreVertices.push({ angle: ang, radius: baseInner * variance });
     }
-
-  
-
-    // continue constructor initialization
     const count = 6; // number of plates
     for (let i = 0; i < count; i++) {
       // Precompute a slim, jagged shard shape for this plate
@@ -105,12 +102,16 @@ export class ColossusBoss {
     // Core vulnerable shard-burst attack state
     this.coreVulnerable = false; // becomes true when plates cleared
     this.coreShardCooldown = 0; // frames until next burst
+    // Death FX state (for core defeat)
+    this.deathFx = null; // { startFrame, growDur, fadeDur, shockRings: Array<number> }
+    this.shockwaveSprite = null; // cached red ring sprite for scalable shockwave
   }
 
   // --- Sprite pre-render helpers ---
   initSprites() {
     this.buildCoreGlowSprites();
     this.buildPlateBaseSprites();
+    this.buildShockwaveSprite();
   }
 
   refreshIfDisplayChanged() {
@@ -204,6 +205,45 @@ export class ColossusBoss {
       g.globalAlpha = 1; g.shadowBlur = 0;
       this.plateBaseSprites[hits] = c;
     }
+  }
+
+  buildShockwaveSprite() {
+    // Cached red ring with soft edges for scalable shockwave
+    const baseR = 128; // logical radius
+    const margin = 24;
+    const size = (baseR + margin) * 2;
+    const c = this.createOffscreen(size, size);
+    if (!c) { this.shockwaveSprite = null; return; }
+    const g = c.getContext('2d');
+    g.save();
+    g.scale(this.dpr, this.dpr);
+    g.translate(size / 2, size / 2);
+    // Outer glow ring
+    g.globalCompositeOperation = 'source-over';
+    g.shadowColor = '#ff2a2a';
+    g.shadowBlur = 22;
+    g.strokeStyle = '#ff2a2a';
+    g.lineWidth = 10;
+    g.beginPath();
+    g.arc(0, 0, baseR, 0, Math.PI * 2);
+    g.stroke();
+    // Inner bright rim
+    g.shadowBlur = 0;
+    g.globalAlpha = 0.9;
+    g.strokeStyle = '#ff5555';
+    g.lineWidth = 4;
+    g.beginPath();
+    g.arc(0, 0, baseR - 2, 0, Math.PI * 2);
+    g.stroke();
+    // Faint inner falloff ring
+    g.globalAlpha = 0.35;
+    g.lineWidth = 2;
+    g.strokeStyle = '#ff7777';
+    g.beginPath();
+    g.arc(0, 0, baseR - 8, 0, Math.PI * 2);
+    g.stroke();
+    g.restore();
+    this.shockwaveSprite = c;
   }
 
   update() {
@@ -570,6 +610,106 @@ export class ColossusBoss {
       }
       ctx.restore();
     }
+
+    // Death FX overlay (after normal boss visuals to ensure on-top)
+    if (this.deathFx) {
+      const { canvas } = this.deps;
+      const now = (typeof getFrameCount === 'function') ? getFrameCount() : 0;
+      const elapsed = now - this.deathFx.startFrame;
+      const growDur = this.deathFx.growDur || 30; // 0.5s @60fps
+      const fadeDur = this.deathFx.fadeDur || 60; // 1s
+      const total = growDur + fadeDur;
+      // Shockwave radius evolves during grow phase; maintain faint trails via buffer
+      const centerX = this.x, centerY = this.y;
+      const maxR = Math.hypot(canvas.width, canvas.height) * 3.5; // doubled shockwave size
+      const tGrow = Math.max(0, Math.min(1, elapsed / growDur));
+      const shockR = maxR * tGrow;
+      if (!this.deathFx.shockRings) this.deathFx.shockRings = [];
+      // Record ring radii for trailing copies
+      if (elapsed <= total) {
+        this.deathFx.shockRings.push(shockR);
+        if (this.deathFx.shockRings.length > 6) this.deathFx.shockRings.shift();
+      }
+      // Draw shockwave rings with additive blending and offscreen culling
+      if (this.shockwaveSprite && elapsed <= total) {
+        const prevOp = ctx.globalCompositeOperation;
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = 0; i < this.deathFx.shockRings.length; i++) {
+          const r = this.deathFx.shockRings[i];
+          if (r <= 2) continue;
+          // Offscreen culling
+          if (centerX + r < 0 || centerX - r > canvas.width || centerY + r < 0 || centerY - r > canvas.height) continue;
+          const a = Math.max(0, 1 - (this.deathFx.shockRings.length - 1 - i) * 0.22);
+          ctx.globalAlpha = 0.85 * a * (elapsed < growDur ? 1 : Math.max(0, 1 - (elapsed - growDur) / fadeDur));
+          const scale = (r / (this.shockwaveSprite.width / (2 * this.dpr))) || 0.0001;
+          const drawW = this.shockwaveSprite.width / this.dpr * scale;
+          const drawH = this.shockwaveSprite.height / this.dpr * scale;
+          ctx.drawImage(this.shockwaveSprite, centerX - drawW / 2, centerY - drawH / 2, drawW, drawH);
+        }
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = prevOp;
+      }
+      // Full-screen white flash: grow to full over 0.5s, then fade over 1s
+      {
+        let flashAlpha = 0;
+        if (elapsed <= growDur) {
+          const t = elapsed / growDur; // 0..1
+          flashAlpha = Math.min(1, t * 1.2); // slight ease-in
+        } else if (elapsed <= total) {
+          const t = (elapsed - growDur) / fadeDur; // 0..1
+          flashAlpha = Math.max(0, 1 - t);
+        }
+        if (flashAlpha > 0.01) {
+          ctx.save();
+          ctx.globalAlpha = flashAlpha;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.restore();
+        }
+      }
+
+      // Expanding white circular explosion that quickly fills screen and fades
+      {
+        const circleFade = this.deathFx.circleFadeDur || 20;
+        let alpha = 0;
+        let r = 0;
+        // grow phase up to growDur
+        const tGrow = Math.max(0, Math.min(1, elapsed / growDur));
+        r = maxR * tGrow;
+        if (elapsed <= growDur) {
+          alpha = 0.9; // bright during growth
+        } else if (elapsed <= growDur + circleFade) {
+          const t = (elapsed - growDur) / circleFade; // 0..1
+          alpha = 0.9 * Math.max(0, 1 - t); // quick fade
+        } else {
+          alpha = 0;
+        }
+        if (alpha > 0.02) {
+          ctx.save();
+          // Soft edge via shadow blur, additive for punch
+          const prevOp = ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = '#ffffff';
+          ctx.shadowColor = '#ffffff';
+          ctx.shadowBlur = 24;
+          ctx.beginPath();
+          ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalCompositeOperation = prevOp;
+          ctx.restore();
+        }
+      }
+
+      // Emit fading white embers for 2 seconds after defeat
+      if (this.deps && typeof getFrameCount === 'function' && this.deathFx.embersUntil && getFrameCount() <= this.deathFx.embersUntil) {
+        // Emit a few per frame using existing ember system
+        this.#emitCoreEmbers(1.3);
+      }
+      if (elapsed > total + 6) {
+        this.deathFx = null; // retire FX
+      }
+    }
   }
 
   platePositions() {
@@ -788,15 +928,27 @@ export class ColossusBoss {
 
   onDefeated() {
     if (this.defeated) return;
-    const { createExplosion, powerups, Powerup, asteroids, enemyBullets, setShake, awardPoints, addEXP } = this.deps;
+    const { createExplosion, powerups, Powerup, asteroids, enemyBullets, setShake, awardPoints, addEXP, unlockReward } = this.deps;
     this.defeated = true;
-    // Big explosion and drops
-    createExplosion(this.x, this.y, this.coreRadius * 3, '#f0f');
+    // Big red shockwave + white screen flash FX
+    const { getFrameCount } = this.deps;
+    this.deathFx = {
+      startFrame: (typeof getFrameCount === 'function') ? getFrameCount() : 0,
+      growDur: 30,
+      fadeDur: 60,
+      shockRings: [],
+      circleFadeDur: 20, // quick fade of expanding white disk after growth
+      embersUntil: ((typeof getFrameCount === 'function') ? getFrameCount() : 0) + 120 // 2s of afterglow
+    };
+    // Optionally still spawn some particles for debris but keep it light (doubled radius)
+    createExplosion && createExplosion(this.x, this.y, this.coreRadius * 4.4, '#f00');
     setShake(24, 8);
     // Award fixed points for defeating the core
     awardPoints(1000, this.x, this.y, true);
     // EXP for boss defeat
     if (typeof addEXP === 'function') addEXP(50, 'boss');
+    // Unlock cosmetic trail on first defeat
+    try { if (typeof unlockReward === 'function') unlockReward('trail_colossus'); } catch (e) {}
     const drops = 2 + Math.floor(Math.random() * 2); // 2-3
     for (let i = 0; i < drops; i++) {
       const ang = Math.random() * Math.PI * 2;

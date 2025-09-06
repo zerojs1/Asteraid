@@ -45,6 +45,9 @@ export class AlienMothershipBoss {
     // note: this.vy already exists (used in phase 1 vertical patrol), reused in phase 2
     this.trail = [];               // recent positions for red trail rendering
     this.heading = Math.PI;        // facing direction (radians). Default pointing left like before
+    // Invulnerability hit ping (when core is protected or phase2 invuln active)
+    this.invulnHitTimer = 0;
+    this.invulnHitAngle = 0;
 
     // Nodes arranged vertically in front (to the left) of the ship
     this.nodeOffsetX = this.coreRadius + 80; // distance in front of mothership core
@@ -146,6 +149,9 @@ export class AlienMothershipBoss {
       this._lastCanvasH = canvas.height;
       // Sprites are resolution-independent from canvas size, but we keep this for future scale variants
     }
+
+    // Decay invulnerability hit ping timer
+    if (this.invulnHitTimer > 0) this.invulnHitTimer--;
   }
 
   buildLaserEmberSprite() {
@@ -664,6 +670,24 @@ export class AlienMothershipBoss {
 
     ctx.shadowBlur = 0;
 
+    // Impact arc ping to indicate invulnerable core bounce
+    if (this.invulnHitTimer > 0) {
+      const a = this.invulnHitAngle;
+      const fade = this.invulnHitTimer / 12;
+      const r = this.coreRadius + 10;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.4 + 0.6 * fade;
+      ctx.shadowBlur = 16 + 12 * fade;
+      ctx.shadowColor = '#faa';
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, r, a - 0.6, a + 0.6);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Precompute node positions for links and drawing
     const positions = this.nodePositions();
 
@@ -815,6 +839,57 @@ export class AlienMothershipBoss {
         ctx.moveTo(p.x, p.y);
         ctx.lineTo(x2, y2);
         ctx.stroke();
+        // Glowing pink spiral wrapping around the beam
+        {
+          const { getFrameCount } = this.deps;
+          const tNow = getFrameCount ? getFrameCount() : 0;
+          const ux = Math.cos(ang), uy = Math.sin(ang);
+          const nx = -uy, ny = ux; // perpendicular unit
+          const beamLen = 1400; // draw a visible portion near screen
+          const sx2 = p.x + ux * beamLen;
+          const sy2 = p.y + uy * beamLen;
+          const turns = 5.0; // number of curls over the visible beam
+          const phase = tNow * 0.25; // animate the curl along time
+          const amp = 12; // spiral radius
+          const steps = 44; // segment count for path
+          const lifeProg = Math.max(0, n.fireTimer / 36); // 0..1 as beam ends
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          // Outer glow spiral
+          ctx.shadowColor = '#ff66cc';
+          ctx.shadowBlur = 18;
+          ctx.strokeStyle = 'rgba(255,102,204,0.65)';
+          ctx.lineWidth = 4;
+          ctx.globalAlpha = 0.7 * lifeProg;
+          ctx.beginPath();
+          for (let i = 0; i <= steps; i++) {
+            const s = i / steps; // 0..1
+            const bx = p.x + ux * (s * beamLen);
+            const by = p.y + uy * (s * beamLen);
+            const offset = amp * Math.sin((s * turns * Math.PI * 2) + phase);
+            const px = bx + nx * offset;
+            const py = by + ny * offset;
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+          // Core spiral
+          ctx.shadowBlur = 0;
+          ctx.strokeStyle = 'rgba(255,170,230,0.95)';
+          ctx.lineWidth = 2;
+          ctx.globalAlpha = 0.9 * lifeProg;
+          ctx.beginPath();
+          for (let i = 0; i <= steps; i++) {
+            const s = i / steps;
+            const bx = p.x + ux * (s * beamLen);
+            const by = p.y + uy * (s * beamLen);
+            const offset = (amp * 0.55) * Math.sin((s * turns * Math.PI * 2) + phase + Math.PI * 0.5);
+            const px = bx + nx * offset;
+            const py = by + ny * offset;
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+          ctx.restore();
+        }
         ctx.globalAlpha = 1;
         ctx.shadowBlur = 0;
       }
@@ -875,8 +950,9 @@ export class AlienMothershipBoss {
         return true; // bullet consumed
       }
     }
-    // Core when nodes are all down
-    if (this.nodes.filter(n => n.hits > 0).length === 0) {
+    const anyNodesLeft = this.nodes.filter(n => n.hits > 0).length > 0;
+    // Core interaction
+    if (!anyNodesLeft) {
       const dx = bullet.x - this.x, dy = bullet.y - this.y;
       if (Math.hypot(dx, dy) < this.coreRadius + bullet.radius) {
         // Core hit
@@ -889,12 +965,47 @@ export class AlienMothershipBoss {
           return true;
         } else {
           // Phase 2: respect invulnerability window
-          if (this.phase2Invuln > 0) return true;
+          if (this.phase2Invuln > 0) {
+            // Reflect bullet and ping when invulnerable
+            const dist = Math.hypot(dx, dy) || 1;
+            const nx = dx / dist, ny = dy / dist;
+            const dot = bullet.vx * nx + bullet.vy * ny;
+            bullet.vx = bullet.vx - 2 * dot * nx;
+            bullet.vy = bullet.vy - 2 * dot * ny;
+            const pad = 2;
+            bullet.x = this.x + nx * (this.coreRadius + bullet.radius + pad);
+            bullet.y = this.y + ny * (this.coreRadius + bullet.radius + pad);
+            if (this.deps.getFrameCount) bullet._skipCollisionsFrame = this.deps.getFrameCount();
+            this.invulnHitTimer = 12;
+            this.invulnHitAngle = Math.atan2(ny, nx);
+            createExplosion && createExplosion(bullet.x, bullet.y, 6, '#faa', 'micro');
+            try { if (this.deps.audio && this.deps.audio.playSfx) this.deps.audio.playSfx('hit'); } catch (e) {}
+            return false;
+          }
           this.phase2Health--;
           createExplosion(this.x, this.y, 90, '#faa');
           if (this.phase2Health <= 0) this.onDefeated();
           return true;
         }
+      }
+    } else {
+      // Core protected by nodes: reflect bullets that hit the core
+      const dx = bullet.x - this.x, dy = bullet.y - this.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < this.coreRadius + bullet.radius) {
+        const nx = dx / (dist || 1), ny = dy / (dist || 1);
+        const dot = bullet.vx * nx + bullet.vy * ny;
+        bullet.vx = bullet.vx - 2 * dot * nx;
+        bullet.vy = bullet.vy - 2 * dot * ny;
+        const pad = 2;
+        bullet.x = this.x + nx * (this.coreRadius + bullet.radius + pad);
+        bullet.y = this.y + ny * (this.coreRadius + bullet.radius + pad);
+        if (this.deps.getFrameCount) bullet._skipCollisionsFrame = this.deps.getFrameCount();
+        this.invulnHitTimer = 12;
+        this.invulnHitAngle = Math.atan2(ny, nx);
+        createExplosion && createExplosion(bullet.x, bullet.y, 6, '#faa', 'micro');
+        try { if (this.deps.audio && this.deps.audio.playSfx) this.deps.audio.playSfx('hit'); } catch (e) {}
+        return false;
       }
     }
     return false;
@@ -921,17 +1032,46 @@ export class AlienMothershipBoss {
         hit = true; break;
       }
     }
-    if (!hit && this.nodes.filter(n => n.hits > 0).length === 0) {
+    const anyNodesLeft = this.nodes.filter(n => n.hits > 0).length > 0;
+    if (!hit) {
       const dx = particle.x - this.x, dy = particle.y - this.y;
-      if (Math.hypot(dx, dy) < this.coreRadius + 12) {
-        if (!this.phase2) {
-          this.coreHealth = Math.max(0, this.coreHealth - 1);
-          if (this.coreHealth === 0) this.startSecondPhase();
-        } else {
-          if (this.phase2Invuln > 0) return; // ignore during invuln
-          this.phase2Health = Math.max(0, this.phase2Health - 1);
-          if (this.phase2Health === 0) this.onDefeated();
+      const dist = Math.hypot(dx, dy);
+      if (!anyNodesLeft) {
+        if (dist < this.coreRadius + 12) {
+          if (!this.phase2) {
+            this.coreHealth = Math.max(0, this.coreHealth - 1);
+            if (this.coreHealth === 0) this.startSecondPhase();
+          } else {
+            if (this.phase2Invuln > 0) {
+              // Reflect particle during invuln
+              const nx = dx / (dist || 1), ny = dy / (dist || 1);
+              const dot = (particle.vx || 0) * nx + (particle.vy || 0) * ny;
+              particle.vx = (particle.vx || 0) - 2 * dot * nx;
+              particle.vy = (particle.vy || 0) - 2 * dot * ny;
+              particle.x = this.x + nx * (this.coreRadius + 12 + 2);
+              particle.y = this.y + ny * (this.coreRadius + 12 + 2);
+              this.invulnHitTimer = 12;
+              this.invulnHitAngle = Math.atan2(ny, nx);
+              createExplosion && createExplosion(particle.x, particle.y, 6, '#faa', 'micro');
+              try { if (this.deps.audio && this.deps.audio.playSfx) this.deps.audio.playSfx('hit'); } catch (e) {}
+              return;
+            }
+            this.phase2Health = Math.max(0, this.phase2Health - 1);
+            if (this.phase2Health === 0) this.onDefeated();
+          }
         }
+      } else if (dist < this.coreRadius + 12) {
+        // Reflect particle while core protected by nodes
+        const nx = dx / (dist || 1), ny = dy / (dist || 1);
+        const dot = (particle.vx || 0) * nx + (particle.vy || 0) * ny;
+        particle.vx = (particle.vx || 0) - 2 * dot * nx;
+        particle.vy = (particle.vy || 0) - 2 * dot * ny;
+        particle.x = this.x + nx * (this.coreRadius + 12 + 2);
+        particle.y = this.y + ny * (this.coreRadius + 12 + 2);
+        this.invulnHitTimer = 12;
+        this.invulnHitAngle = Math.atan2(ny, nx);
+        createExplosion && createExplosion(particle.x, particle.y, 6, '#faa', 'micro');
+        try { if (this.deps.audio && this.deps.audio.playSfx) this.deps.audio.playSfx('hit'); } catch (e) {}
       }
     }
   }
@@ -1011,7 +1151,7 @@ export class AlienMothershipBoss {
 
   onDefeated() {
     if (this.defeated) return;
-    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints } = this.deps;
+    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints, unlockReward } = this.deps;
     this.defeated = true;
     createExplosion(this.x, this.y, this.coreRadius * 3, '#faa');
     setShake && setShake(26, 9);
@@ -1038,5 +1178,11 @@ export class AlienMothershipBoss {
     if (drones) drones.length = 0;
     // EXP: Award 250 EXP for defeating Alien Mothership boss
     if (this.deps.addEXP) this.deps.addEXP(250, 'boss-mothership');
+    // Unlock boss cosmetic: ship skin
+    try {
+      if (typeof unlockReward === 'function') {
+        unlockReward('skin_alienmothership');
+      }
+    } catch (e) {}
   }
 }

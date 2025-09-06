@@ -25,10 +25,131 @@ export class AudioManager {
     // Runtime state
     this._thrust = null; // { src, osc, lp, g }
     this._music = { timer: null, mode: null, nextBeat: 0, bpm: 110 };
+    // Sample playback handles
+    this._chargingLoop = null;
+    this._warpLoop = null;
+    // Buffer-based sample system
+    this._bufferCache = new Map(); // url -> AudioBuffer
+    this._bufferLoadPromises = new Map(); // url -> Promise<AudioBuffer>
+    this._polyphony = new Map(); // key -> Set<AudioBufferSourceNode>
+    this._lastPlayAt = new Map(); // key -> number (ctx.currentTime)
 
     // Lazily create context to comply with autoplay policies
     this._initContext();
     this.bindUnlockToGestures(document);
+  }
+
+  // --- Sample playback (AudioBuffer-based) ---
+  // Returns a handle with stop() to halt playback and release nodes
+  playSample(url, { loop = false, volume = 1.0, key, rateMs = 0, maxPoly = Infinity } = {}) {
+    if (!this.ctx || !this.sfxGain) return null;
+    const k = key || url;
+    const now = this.ctx.currentTime;
+    // Rate limit
+    if (rateMs > 0) {
+      const last = this._lastPlayAt.get(k) || 0;
+      if (now - last < (rateMs / 1000)) return null;
+    }
+    // Polyphony cap
+    const poly = this._getPolySet(k);
+    if (poly.size >= maxPoly) return null;
+    // Ensure buffer loaded
+    const buf = this._bufferCache.get(url);
+    if (!buf) {
+      this._loadSample(url); // kick off load
+      return null; // first trigger skipped until loaded
+    }
+    // Create nodes
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = !!loop;
+    const g = this.ctx.createGain();
+    g.gain.value = Math.max(0, Math.min(1, volume));
+    src.connect(g);
+    this._connectSfx(g, 0);
+    // Track polyphony
+    poly.add(src);
+    const cleanup = () => {
+      try { src.disconnect(); } catch (e) {}
+      try { g.disconnect && g.disconnect(); } catch (e) {}
+      poly.delete(src);
+    };
+    src.onended = cleanup;
+    try { src.start(); } catch (e) { cleanup(); return null; }
+    this._lastPlayAt.set(k, now);
+    return {
+      stop: () => { try { src.stop(); } catch (e) {} cleanup(); }
+    };
+  }
+
+  _getPolySet(key) {
+    let set = this._polyphony.get(key);
+    if (!set) { set = new Set(); this._polyphony.set(key, set); }
+    return set;
+  }
+
+  async _loadSample(url) {
+    if (!this.ctx) this._initContext();
+    if (!this.ctx) return null;
+    if (this._bufferCache.has(url)) return this._bufferCache.get(url);
+    if (this._bufferLoadPromises.has(url)) return this._bufferLoadPromises.get(url);
+    const p = (async () => {
+      try {
+        const res = await fetch(url);
+        const ab = await res.arrayBuffer();
+        const buf = await this.ctx.decodeAudioData(ab);
+        this._bufferCache.set(url, buf);
+        this._bufferLoadPromises.delete(url);
+        return buf;
+      } catch (e) {
+        this._bufferLoadPromises.delete(url);
+        return null;
+      }
+    })();
+    this._bufferLoadPromises.set(url, p);
+    return p;
+  }
+
+  preloadSamples() {
+    const urls = [
+      'sound/bullet.wav',
+      'sound/pickup.wav',
+      'sound/levelup.wav',
+      'sound/charging.wav',
+      'sound/warp.wav',
+      'sound/powerup-flakk.wav',
+      'sound/powerup-laser.wav',
+      'sound/powerup-shield.wav',
+      'sound/powerup-teleport.wav',
+      'sound/micro-explosion.wav',
+      'sound/small-explosion.wav',
+      'sound/medium-explosion.wav',
+      'sound/large-explosion.wav',
+      'sound/boss-explosion.wav'
+    ];
+    urls.forEach(u => this._loadSample(u));
+  }
+
+  // Convenience helpers
+  playPickup() { this.playSample('sound/pickup.wav', { key: 'pickup', loop: false, volume: 1.0, rateMs: 50, maxPoly: 6 }); }
+  playLevelUp() { this.playSample('sound/levelup.wav', { key: 'levelup', loop: false, volume: 1.0 }); }
+  startChargingLoop() { if (!this._chargingLoop) this._chargingLoop = this.playSample('sound/charging.wav', { key: 'loop_charging', loop: true, volume: 1.0, maxPoly: 1 }); }
+  stopChargingLoop() { if (this._chargingLoop && this._chargingLoop.stop) { try { this._chargingLoop.stop(); } catch (e) {} } this._chargingLoop = null; }
+  startWarpLoop() { if (!this._warpLoop) this._warpLoop = this.playSample('sound/warp.wav', { key: 'loop_warp', loop: true, volume: 1.0, maxPoly: 1 }); }
+  stopWarpLoop() { if (this._warpLoop && this._warpLoop.stop) { try { this._warpLoop.stop(); } catch (e) {} } this._warpLoop = null; }
+
+  // --- Sample SFX convenience ---
+  playBulletSample(/* p = {} */) { this.playSample('sound/bullet.wav', { key: 'bullet', rateMs: 40, maxPoly: 8 }); }
+  playPowerupFlak() { this.playSample('sound/powerup-flakk.wav', { key: 'powerup_flak', rateMs: 60, maxPoly: 4 }); }
+  playPowerupLaser() { this.playSample('sound/powerup-laser.wav', { key: 'powerup_laser', rateMs: 60, maxPoly: 3 }); }
+  playPowerupShield() { this.playSample('sound/powerup-shield.wav', { key: 'powerup_shield', rateMs: 120, maxPoly: 2 }); }
+  playPowerupTeleport(/* p = {} */) { this.playSample('sound/powerup-teleport.wav', { key: 'powerup_teleport', rateMs: 120, maxPoly: 2 }); }
+  playExplosionSample(p = {}) {
+    const { radius = 80, profile = 'default' } = p || {};
+    if (profile === 'micro') { this.playSample('sound/micro-explosion.wav', { key: 'explosion_micro', rateMs: 40, maxPoly: 4 }); return; }
+    if (radius >= 180) this.playSample('sound/large-explosion.wav', { key: 'explosion_large', rateMs: 80, maxPoly: 2 });
+    else if (radius >= 90) this.playSample('sound/medium-explosion.wav', { key: 'explosion_medium', rateMs: 60, maxPoly: 3 });
+    else this.playSample('sound/small-explosion.wav', { key: 'explosion_small', rateMs: 40, maxPoly: 4 });
   }
 
   _sfxChargeStart(t, p = {}) {
@@ -262,6 +383,8 @@ export class AudioManager {
       o.start(t);
       o.stop(t + 0.01);
       this.unlocked = true;
+      // Preload common samples as soon as we're unlocked
+      try { this.preloadSamples(); } catch (e) {}
       return true;
     } catch (e) {
       console.warn('Audio unlock failed:', e);
@@ -283,12 +406,13 @@ export class AudioManager {
     if (!this.ctx || !this.sfxGain) return;
     const t0 = this.ctx.currentTime;
     switch (name) {
-      case 'bullet': return this._sfxBullet(t0, opts);
-      case 'flak': return this._sfxFlak(t0, opts);
-      case 'laser': return this._sfxLaser(t0, opts);
-      case 'explosion': return this._sfxExplosion(t0, opts);
-      case 'shield': return this._sfxShield(t0, opts);
-      case 'teleport': return this._sfxTeleport(t0, opts);
+      // Route to sample-based playback for richer SFX
+      case 'bullet': return this.playBulletSample(opts);
+      case 'flak': return this.playPowerupFlak(opts);
+      case 'laser': return this.playPowerupLaser(opts);
+      case 'explosion': return this.playExplosionSample(opts);
+      case 'shield': return this.playPowerupShield(opts);
+      case 'teleport': return this.playPowerupTeleport(opts);
       case 'hit': return this._sfxHit(t0, opts);
       case 'chargeStart': return this._sfxChargeStart(t0, opts);
       case 'chargeTick': return this._sfxChargeTick(t0, opts);

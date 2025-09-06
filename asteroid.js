@@ -38,11 +38,16 @@ export class Asteroid {
     this.rotationSpeed = (Math.random() - 0.5) * 0.02;
 
     // Generate random vertices for irregular shape
+    // Jaggedness tuning notes:
+    // - numVertices controls overall silhouette complexity. Higher -> more facets.
+    // - variance range (min..max) controls spike severity. Wider -> more jagged edges.
+    // To tweak, adjust `numVertices` base and the `variance` expression below.
+    // Consider keeping elites/armored with distinct styles if changing visuals globally.
     this.vertices = [];
-    const numVertices = 8 + Math.floor(Math.random() * 4);
+    const numVertices = 9 + Math.floor(Math.random() * 4);
     for (let i = 0; i < numVertices; i++) {
       const ang = (i / numVertices) * Math.PI * 2;
-      const variance = 0.8 + Math.random() * 0.4;
+      const variance = 0.9 + Math.random() * 0.4;
       this.vertices.push({ angle: ang, radius: this.radius * variance });
     }
     // Elite asteroids can render an afterimage trail on Level 7
@@ -275,6 +280,11 @@ export class Asteroid {
       }
     }
 
+    // SFX: impact (only if not destroyed by this hit)
+    if (deps && typeof deps.playSfx === 'function' && this.hits > 0) {
+      deps.playSfx('hit');
+    }
+
     if (this.hits <= 0) {
       return this.destroy(deps);
     }
@@ -329,6 +339,11 @@ export class Asteroid {
     // Drop power-up
     if (this.shouldDropPowerup() && canPushPowerup && canPushPowerup()) {
       this.dropPowerup(pushPowerup);
+    }
+
+    // SFX: breakup (non-elite). No explosion visuals here, so provide audio feedback.
+    if (deps && typeof deps.playSfx === 'function') {
+      deps.playSfx('explosion', { radius: this.radius });
     }
 
     return newAsteroids;

@@ -10,6 +10,57 @@ import {
   TETHER_RESPAWN_FRAMES,
 } from './constants.js';
 
+// Cached glow/ring sprite factory to avoid per-frame shadowBlur cost
+class GlowSpriteFactory {
+  static cache = new Map(); // key -> canvas
+  static #makeKey(type, color, variant) {
+    return `${type}|${color}|${variant || 'default'}`;
+  }
+  // Pre-render a neon ring sprite; variant can be 'thin' or 'thick'
+  static getRing(color = '#6cf', variant = 'thin') {
+    const key = this.#makeKey('ring', color, variant);
+    if (this.cache.has(key)) return this.cache.get(key);
+    // Choose sprite parameters based on variant
+    const size = (variant === 'thin_hq') ? 256 : 168; // HQ sprite for large-scale use
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const sctx = c.getContext('2d');
+    const cx = size * 0.5, cy = size * 0.5;
+    const r = (variant === 'thin_hq') ? size * 0.28 : size * 0.32; // extra padding for HQ
+    sctx.strokeStyle = color;
+    // Reduce thin variant thickness by 60%; keep thick similar for primary outline
+    sctx.lineWidth = (variant === 'thick') ? 12 : 2.8;
+    sctx.shadowColor = color;
+    sctx.shadowBlur = (variant === 'thick') ? 30 : (variant === 'thin_hq' ? 32 : 24);
+    sctx.beginPath();
+    sctx.arc(cx, cy, r, 0, Math.PI * 2);
+    sctx.stroke();
+    sctx.shadowBlur = 0;
+    this.cache.set(key, c);
+    return c;
+  }
+  // Pre-render a soft dot glow sprite
+  static getDot(color = '#0ff') {
+    const key = this.#makeKey('dot', color, 'default');
+    if (this.cache.has(key)) return this.cache.get(key);
+    const size = 125; // ~+30% larger than 96
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const sctx = c.getContext('2d');
+    const cx = size * 0.5, cy = size * 0.5;
+    // Use shadowBlur once at build time to create a soft dot
+    sctx.fillStyle = color;
+    sctx.shadowColor = color;
+    sctx.shadowBlur = 34;
+    sctx.beginPath();
+    sctx.arc(cx, cy, size * 0.16, 0, Math.PI * 2);
+    sctx.fill();
+    sctx.shadowBlur = 0;
+    this.cache.set(key, c);
+    return c;
+  }
+}
+
 export class GravityWell {
   constructor(x, y, strength = GRAVITY_STRENGTH, radius = GRAVITY_RADIUS) {
     this.x = x;
@@ -17,33 +68,115 @@ export class GravityWell {
     this.strength = strength;
     this.radius = radius;
     this.pulse = 0;
+    // Fade-in state (2 seconds @60fps)
+    this.fadeInFrames = 120;
+    this.spawnAlpha = 0; // ramps 0->1 over fadeInFrames
+    // Inward particle flow (sparkles/stars)
+    this.flowParticles = [];
+    this.flowSpawnAccum = 0;
   }
   update() {
-    this.pulse += 0.03;
+    this.pulse += 0.06;
+    // Advance fade-in
+    if (this.spawnAlpha < 1) {
+      this.spawnAlpha += 1 / this.fadeInFrames;
+      if (this.spawnAlpha > 1) this.spawnAlpha = 1;
+    }
+    // Update inward particle stream
+    const outerStatic = this.radius * (0.45 + 3 * 0.15) + Math.sin(this.pulse + 3) * 4;
+    const startR = outerStatic * 1.2;
+    // Spawn ~3 particles/frame for a visible stream, scaled by spawnAlpha
+    const spawnRate = 3 * (this.spawnAlpha ?? 1);
+    this.flowSpawnAccum += spawnRate;
+    const toSpawn = Math.floor(this.flowSpawnAccum);
+    if (toSpawn > 0) this.flowSpawnAccum -= toSpawn;
+    for (let i = 0; i < toSpawn; i++) {
+      if (this.flowParticles.length > 120) break; // cap
+      const ang = Math.random() * Math.PI * 2;
+      const life = 288 + (Math.random() * 240); // further slowed: ~4.8s - 8.8s
+      this.flowParticles.push({
+        ang,
+        age: 0,
+        life,
+        r0: startR * (0.9 + Math.random() * 0.2),
+        r1: 0,
+        size: 1.2 + Math.random() * 2.2,
+        tint: Math.random() < 0.5 ? '#cfe' : (Math.random() < 0.5 ? '#9ef' : '#fff'),
+        spin: (Math.random() - 0.5) * 0.15,
+      });
+    }
+    // Advance and prune
+    for (let i = this.flowParticles.length - 1; i >= 0; i--) {
+      const p = this.flowParticles[i];
+      p.age++;
+      p.ang += p.spin;
+      if (p.age >= p.life) this.flowParticles.splice(i, 1);
+    }
   }
   draw(ctx) {
-    // Concentric neon rings
+    const prevOp = ctx.globalCompositeOperation;
+    ctx.globalCompositeOperation = 'lighter';
+    // Concentric neon rings via cached sprites
     for (let i = 3; i >= 0; i--) {
       const color = i === 0 ? '#48f' : '#90f';
-      ctx.globalAlpha = i === 0 ? 0.9 : 0.25;
-      ctx.strokeStyle = color;
-      ctx.shadowBlur = 20 - i * 4;
-      ctx.shadowColor = color;
-      ctx.lineWidth = i === 0 ? 2 : 1;
+      const alpha = (i === 0 ? 0.9 : 0.25) * (this.spawnAlpha ?? 1);
       const r = this.radius * (0.45 + i * 0.15) + Math.sin(this.pulse + i) * 4;
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
-      ctx.stroke();
+      const ring = GlowSpriteFactory.getRing(color, i === 0 ? 'thick' : 'thin');
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(ring, this.x - r, this.y - r, r * 2, r * 2);
     }
-    // Core glow
+    // Animated inward-moving suction rings (3 thin rings)
+    {
+      // Approximate current outer ring radius from the static set (i=3)
+      const outerStatic = this.radius * (0.45 + 3 * 0.15) + Math.sin(this.pulse + 3) * 4;
+      const startR = outerStatic * 1.2; // 20% larger than outer
+      // Even slower phase (another 2x duration)
+      const basePhase = ((this.pulse * 0.05) % 1 + 1) % 1; // 0..1
+      const ringSprite = GlowSpriteFactory.getRing('#9ef', 'thin_hq');
+      for (let k = 0; k < 3; k++) {
+        let t = (basePhase + k / 3) % 1; // 0..1
+        // Smooth easing for calmer motion
+        const te = (1 - Math.cos(t * Math.PI)) * 0.5; // 0..1
+        // Shrink radius toward center; clamp very small radii to avoid flicker
+        const rMove = Math.max(3, startR * (1 - te));
+        const alpha = 0.4 * (rMove / startR) * (this.spawnAlpha ?? 1);
+        if (alpha <= 0.01) continue;
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(ringSprite, this.x - rMove, this.y - rMove, rMove * 2, rMove * 2);
+      }
+    }
+    // Inward particles (stars/sparkles)
+    {
+      const dotWhite = GlowSpriteFactory.getDot('#fff');
+      const dotBlue = GlowSpriteFactory.getDot('#9ef');
+      for (let i = 0; i < this.flowParticles.length; i++) {
+        const p = this.flowParticles[i];
+        const t = Math.min(1, p.age / p.life);
+        const te = (1 - Math.cos(t * Math.PI)) * 0.5;
+        const rNow = p.r0 * (1 - te);
+        const x = this.x + Math.cos(p.ang) * rNow;
+        const y = this.y + Math.sin(p.ang) * rNow;
+        const a = 0.6 * (1 - te) * (this.spawnAlpha ?? 1);
+        if (a <= 0.01) continue;
+        ctx.globalAlpha = a;
+        const spr = (p.tint === '#fff') ? dotWhite : dotBlue;
+        // Size curve: outer small (0.5x), inner larger (1.0x)
+        const s = p.size * (0.5 + 0.5 * te);
+        ctx.drawImage(spr, x - s, y - s, s * 2, s * 2);
+        // A tiny sharp star core
+        ctx.globalAlpha = Math.min(1, a * 1.2);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(x - 0.5, y - 0.5, 1, 1);
+      }
+    }
+    // Core glow dot (doubled size)
+    const coreR = (6 + Math.sin(this.pulse * 2) * 2) * 2;
+    const dot = GlowSpriteFactory.getDot('#0ff');
+    ctx.globalAlpha = 1 * (this.spawnAlpha ?? 1);
+    ctx.drawImage(dot, this.x - coreR, this.y - coreR, coreR * 2, coreR * 2);
+    // Restore state
     ctx.globalAlpha = 1;
-    ctx.shadowBlur = 12;
-    ctx.shadowColor = '#0ff';
-    ctx.fillStyle = '#0ff';
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, 6 + Math.sin(this.pulse * 2) * 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
+    ctx.globalCompositeOperation = prevOp;
   }
 }
 
@@ -218,26 +351,17 @@ export class TetherPair {
     const color = '#6cf';
     const coreColor = '#cfffff';
     const lwCore = tetherActive ? 3.2 : 2.2; // thicker while tether active
-    // Neon halo
+    // Neon halo via cached ring sprite
     ctx.save();
+    const prevOp = ctx.globalCompositeOperation;
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.42 + 0.36 * p;
-    ctx.shadowBlur = 22 + 10 * p;
-    ctx.shadowColor = color;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lwCore + 1.6;
-    if (path) {
-      ctx.translate(x, y);
-      ctx.stroke(path);
-      ctx.translate(-x, -y);
-    } else {
-      ctx.beginPath();
-      ctx.arc(x, y, this.radius, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    // Core jagged outline
+    const haloR = this.radius + 2; // small expansion to cover jagged edges
+    const ring = GlowSpriteFactory.getRing(color, tetherActive ? 'thick' : 'thin');
+    ctx.drawImage(ring, x - haloR, y - haloR, haloR * 2, haloR * 2);
+    // Core jagged outline (normal composite)
+    ctx.globalCompositeOperation = prevOp;
     ctx.globalAlpha = 1.0;
-    ctx.shadowBlur = 0;
     ctx.strokeStyle = color;
     ctx.lineWidth = lwCore;
     if (path) {
@@ -249,13 +373,11 @@ export class TetherPair {
       ctx.arc(x, y, this.radius, 0, Math.PI * 2);
       ctx.stroke();
     }
-    // Core dot
-    ctx.shadowBlur = 12;
-    ctx.shadowColor = '#9ef';
-    ctx.fillStyle = coreColor;
-    ctx.beginPath();
-    ctx.arc(x, y, 4.5 + 1.5 * p, 0, Math.PI * 2);
-    ctx.fill();
+    // Core dot via cached glow sprite
+    ctx.globalCompositeOperation = 'lighter';
+    const dotR = 4.5 + 1.5 * p;
+    const dot = GlowSpriteFactory.getDot('#9ef');
+    ctx.drawImage(dot, x - dotR, y - dotR, dotR * 2, dotR * 2);
     ctx.restore();
   }
   #buildNodeGeometry() {
@@ -294,6 +416,10 @@ export class TetherPair {
     if (which === 'A') {
       if (this.aDead) return false;
       this.aHits--;
+      // SFX: impact if node A not yet destroyed
+      if (deps && typeof deps.playSfx === 'function' && this.aHits > 0) {
+        deps.playSfx('hit');
+      }
       if (this.aHits <= 0) {
         this.aDead = true;
         // Full destruction feedback: particles + boom + rewards
@@ -314,6 +440,10 @@ export class TetherPair {
     } else if (which === 'B') {
       if (this.bDead) return false;
       this.bHits--;
+      // SFX: impact if node B not yet destroyed
+      if (deps && typeof deps.playSfx === 'function' && this.bHits > 0) {
+        deps.playSfx('hit');
+      }
       if (this.bHits <= 0) {
         this.bDead = true;
         if (typeof spawnParticle === 'function') {
@@ -392,45 +522,131 @@ export class Wormhole {
     this.y = y;
     this.radius = WORMHOLE_RADIUS;
     this.pulse = 0;
+    // Fade-in state (2 seconds @60fps)
+    this.fadeInFrames = 120;
+    this.spawnAlpha = 0; // ramps 0->1 over fadeInFrames
+    // Outward particle flow (sparkles/stars)
+    this.flowParticles = [];
+    this.flowSpawnAccum = 0;
   }
   update() {
     this.pulse += 0.06;
+    // Advance fade-in
+    if (this.spawnAlpha < 1) {
+      this.spawnAlpha += 1 / this.fadeInFrames;
+      if (this.spawnAlpha > 1) this.spawnAlpha = 1;
+    }
+    // Update outward particle stream
+    const scale = 1.6; // match visual scale
+    const outerStatic = (this.radius + Math.sin(this.pulse + 3) * 3 + 3 * 3) * 1.5 * scale;
+    const endR = outerStatic * 1.2;
+    // Spawn ~3 particles/frame
+    const spawnRate = 3 * (this.spawnAlpha ?? 1);
+    this.flowSpawnAccum += spawnRate;
+    const toSpawn = Math.floor(this.flowSpawnAccum);
+    if (toSpawn > 0) this.flowSpawnAccum -= toSpawn;
+    for (let i = 0; i < toSpawn; i++) {
+      if (this.flowParticles.length > 120) break; // cap
+      const ang = Math.random() * Math.PI * 2;
+      const life = 144 + (Math.random() * 120);
+      this.flowParticles.push({
+        ang,
+        age: 0,
+        life,
+        r0: 2 + Math.random() * 6,
+        r1: endR * (0.85 + Math.random() * 0.2),
+        size: 1.2 + Math.random() * 2.2,
+        tint: Math.random() < 0.5 ? '#cfe' : (Math.random() < 0.5 ? '#8ff' : '#fff'),
+        spin: (Math.random() - 0.5) * 0.15,
+      });
+    }
+    // Advance and prune
+    for (let i = this.flowParticles.length - 1; i >= 0; i--) {
+      const p = this.flowParticles[i];
+      p.age++;
+      p.ang += p.spin;
+      if (p.age >= p.life) this.flowParticles.splice(i, 1);
+    }
   }
   draw(ctx) {
-    // Faint energy field for visibility
-    const outerR = this.radius + 14;
+    // Faint energy field for visibility (keep gradient fill)
+    const scale = 1.6; // visual-only scale (does not change gameplay radius)
+    const outerR = (this.radius + 14) * scale;
     const grad = ctx.createRadialGradient(this.x, this.y, 2, this.x, this.y, outerR);
     grad.addColorStop(0, 'rgba(200, 255, 255, 0.28)');
     grad.addColorStop(0.6, 'rgba(120, 220, 255, 0.16)');
     grad.addColorStop(1, 'rgba(0, 160, 255, 0.0)');
     ctx.fillStyle = grad;
+    ctx.globalAlpha = (this.spawnAlpha ?? 1);
     ctx.beginPath();
     ctx.arc(this.x, this.y, outerR, 0, Math.PI * 2);
     ctx.fill();
+    ctx.globalAlpha = 1;
 
-    // Neon swirling rings (brighter)
+    // Neon swirling rings via cached sprites
+    const prevOp = ctx.globalCompositeOperation;
+    ctx.globalCompositeOperation = 'lighter';
     for (let i = 3; i >= 0; i--) {
       const c = i === 0 ? '#4af' : (i === 1 ? '#8ff' : '#a0f');
-      ctx.globalAlpha = i === 0 ? 1 : 0.5;
-      ctx.strokeStyle = c;
-      ctx.shadowBlur = 22 - i * 4;
-      ctx.shadowColor = c;
-      ctx.lineWidth = i === 0 ? 3 : 1.5;
       let r = this.radius + Math.sin(this.pulse + i) * 3 + i * 3;
-      // Enlarge the outermost outline circle by 50% for better visibility
-      if (i === 3) r *= 1.5;
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
-      ctx.stroke();
+      if (i === 3) r *= 1.5; // enlarge outermost
+      r *= scale;
+      let alpha = (i === 0 ? 1 : 0.5) * (this.spawnAlpha ?? 1);
+      if (i === 3) alpha *= 0.5; // reduce outermost ring alpha by 50%
+      const ring = GlowSpriteFactory.getRing(c, i === 0 ? 'thick' : 'thin');
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(ring, this.x - r, this.y - r, r * 2, r * 2);
     }
-    // Core
+    // Animated outward-moving rings (3 thin rings)
+    {
+      // Compute target outer radius ~20% larger than current outer ring (i=3)
+      const outerStatic = (this.radius + Math.sin(this.pulse + 3) * 3 + 3 * 3) * 1.5 * scale;
+      const endR = outerStatic * 1.2;
+      // Even slower phase for longer animation (another 2x duration)
+      const basePhase = ((this.pulse * 0.0625) % 1 + 1) % 1; // 0..1
+      const ringSprite = GlowSpriteFactory.getRing('#8ff', 'thin_hq');
+      for (let k = 0; k < 3; k++) {
+        let t = (basePhase + k / 3) % 1; // 0..1
+        // Smooth easing
+        const te = (1 - Math.cos(t * Math.PI)) * 0.5;
+        const rMove = Math.max(2, te * endR);
+        const alpha = 0.4 * (1 - te) * (this.spawnAlpha ?? 1);
+        if (alpha <= 0.01) continue;
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(ringSprite, this.x - rMove, this.y - rMove, rMove * 2, rMove * 2);
+      }
+    }
+    // Outward particles (stars/sparkles)
+    {
+      const dotWhite = GlowSpriteFactory.getDot('#fff');
+      const dotBlue = GlowSpriteFactory.getDot('#8ff');
+      const endR = (this.radius + Math.sin(this.pulse + 3) * 3 + 3 * 3) * 1.5 * scale * 1.2;
+      for (let i = 0; i < this.flowParticles.length; i++) {
+        const p = this.flowParticles[i];
+        const t = Math.min(1, p.age / p.life);
+        const te = (1 - Math.cos(t * Math.PI)) * 0.5;
+        const rNow = p.r0 + (p.r1 - p.r0) * te;
+        const x = this.x + Math.cos(p.ang) * rNow;
+        const y = this.y + Math.sin(p.ang) * rNow;
+        const a = 0.55 * (1 - te) * (this.spawnAlpha ?? 1);
+        if (a <= 0.01) continue;
+        ctx.globalAlpha = a;
+        const spr = (p.tint === '#fff') ? dotWhite : dotBlue;
+        // Size curve for outward flow: start larger, outer small
+        const s = p.size * (0.5 + 0.5 * (1 - te));
+        ctx.drawImage(spr, x - s, y - s, s * 2, s * 2);
+        // Sharp core
+        ctx.globalAlpha = Math.min(1, a * 1.2);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(x - 0.5, y - 0.5, 1, 1);
+      }
+    }
+    // Core glow dot
+    const coreR = (6 + Math.sin(this.pulse * 2) * 2) * scale;
+    const dot = GlowSpriteFactory.getDot('#8ff');
+    ctx.globalAlpha = 1 * (this.spawnAlpha ?? 1);
+    ctx.drawImage(dot, this.x - coreR, this.y - coreR, coreR * 2, coreR * 2);
     ctx.globalAlpha = 1;
-    ctx.shadowBlur = 14;
-    ctx.shadowColor = '#8ff';
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, 6 + Math.sin(this.pulse * 2) * 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
+    ctx.globalCompositeOperation = prevOp;
   }
 }

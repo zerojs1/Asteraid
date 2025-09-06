@@ -31,6 +31,10 @@ export class FinalAsteroidBoss {
     // Geometry
     this.shellRadius = 180; // ~3x largest normal asteroid radius (60)
     this.coreRadius = 60;   // core roughly size of largest asteroid
+    // Core scaling state (grows 10% per vulnerable hit)
+    this.baseCoreRadius = this.coreRadius;
+    this.maxCoreRadius = this.baseCoreRadius * 1.8; // clamp to prevent excessive growth
+    this.coreScaleCooldown = 0; // frames until next allowed scale-up (throttle for continuous damage like lasers)
 
     // Health / state
     this.shellHits = 12;     // increased by ~35% (from 5)
@@ -126,6 +130,7 @@ export class FinalAsteroidBoss {
 
     // Timers
     if (this.spawnInvuln > 0) this.spawnInvuln--;
+    if (this.coreScaleCooldown > 0) this.coreScaleCooldown--;
 
     // Rotation: shell rotates slowly clockwise while shields up; stop when shell becomes vulnerable
     if (this.anyBatteriesAlive()) {
@@ -529,8 +534,9 @@ export class FinalAsteroidBoss {
       ctx.rotate(this.coreAngle);
       ctx.drawImage(this.coreSprite, -this.coreSprite.width / (2 * this.dpr), -this.coreSprite.height / (2 * this.dpr), this.coreSprite.width / this.dpr, this.coreSprite.height / this.dpr);
       // Inner hot pulse overlay (dynamic)
-      ctx.globalAlpha = 0.2 + glowPhase * 0.22; ctx.shadowBlur = 24 + glowPhase * 20; ctx.fillStyle = 'rgba(255,80,80,0.65)';
-      ctx.beginPath(); ctx.arc(0, 0, 12 + glowPhase * 8, 0, Math.PI * 2); ctx.fill();
+      const coreScale = this.getCoreScale ? this.getCoreScale() : (this.coreRadius / this.baseCoreRadius);
+      ctx.globalAlpha = 0.2 + glowPhase * 0.22; ctx.shadowBlur = (24 + glowPhase * 20) * coreScale; ctx.fillStyle = 'rgba(255,80,80,0.65)';
+      ctx.beginPath(); ctx.arc(0, 0, (12 + glowPhase * 8) * coreScale, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
       ctx.globalAlpha = 1; ctx.shadowBlur = 0;
     }
@@ -542,7 +548,7 @@ export class FinalAsteroidBoss {
       ctx.globalCompositeOperation = 'lighter';
       for (let i = 0; i < this.coreEmbers.length; i++) {
         const em = this.coreEmbers[i];
-        const s = (this.coreSparkSprite ? (this.coreSparkSprite.width / this.dpr) : 8) * em.scale * 2;
+        const s = (this.coreSparkSprite ? (this.coreSparkSprite.width / this.dpr) : 8) * em.scale * 2 * (this.getCoreScale ? this.getCoreScale() : (this.coreRadius / this.baseCoreRadius));
         ctx.globalAlpha = em.alpha;
         if (this.coreSparkSprite) {
           ctx.drawImage(this.coreSparkSprite, em.x - s * 0.5, em.y - s * 0.5, s, s);
@@ -645,6 +651,25 @@ export class FinalAsteroidBoss {
   getSlamRadius() {
     // Place the slam ring outside the outer shell by a base offset, scaled by destroyed batteries.
     return this.shellRadius + (this.slamBaseOffset * this.slamDistanceScale);
+  }
+
+  // Current visual scale of the core relative to its base radius
+  getCoreScale() {
+    return (this.baseCoreRadius > 0) ? (this.coreRadius / this.baseCoreRadius) : 1;
+  }
+
+  // Apply a 10% growth when the vulnerable core takes a hit, with a short cooldown to avoid runaway growth from continuous sources
+  onCoreHitEvent() {
+    if (this.coreScaleCooldown > 0) return;
+    // Grow core radius by 10%, clamped to max
+    const next = Math.min(this.maxCoreRadius, this.coreRadius * 1.1);
+    if (next !== this.coreRadius) {
+      this.coreRadius = next;
+      // Rebuild core sprite to match new radius
+      this.buildCoreSprite();
+    }
+    // Throttle further growth briefly to handle lasers and explosions ticking across frames
+    this.coreScaleCooldown = 8; // ~0.13s at 60 FPS
   }
 
   // --- Sprite pre-render helpers ---
@@ -1078,6 +1103,7 @@ export class FinalAsteroidBoss {
         if (this.spawnInvuln > 0) return true;
         this.coreHealth--;
         createExplosion && createExplosion(this.x, this.y, 100, '#faa');
+        if (this.coreHealth > 0) this.onCoreHitEvent();
         if (this.coreHealth <= 0) this.onDefeated();
         return true;
       }
@@ -1150,6 +1176,7 @@ export class FinalAsteroidBoss {
       if (Math.hypot(dx, dy) < this.coreRadius + 12) {
         if (this.spawnInvuln <= 0) {
           this.coreHealth = Math.max(0, this.coreHealth - 1);
+          if (this.coreHealth > 0) this.onCoreHitEvent();
           if (this.coreHealth === 0) this.onDefeated();
         }
       }
@@ -1201,6 +1228,7 @@ export class FinalAsteroidBoss {
         any = true;
         if (this.spawnInvuln <= 0) {
           this.coreHealth = Math.max(0, this.coreHealth - 1);
+          if (this.coreHealth > 0) this.onCoreHitEvent();
           if (this.coreHealth === 0) this.onDefeated();
         }
       }
@@ -1242,6 +1270,7 @@ export class FinalAsteroidBoss {
       if (this.spawnInvuln <= 0) {
         this.coreHealth = Math.max(0, this.coreHealth - 2);
         createExplosion && createExplosion(this.x, this.y, 100, '#faa');
+        if (this.coreHealth > 0) this.onCoreHitEvent();
         if (this.coreHealth === 0) this.onDefeated();
       }
     }
@@ -1299,5 +1328,54 @@ export class FinalAsteroidBoss {
     }
     // EXP: Award 900 EXP for defeating Final Asteroid boss
     if (this.deps.addEXP) this.deps.addEXP(900, 'boss-finalasteroid');
+    // Persist final clears and unlock rewards
+    try {
+      // Increment clears
+      let clears = 0;
+      try { clears = parseInt(localStorage.getItem('asteraidFinalClears') || '0', 10) || 0; } catch (e) { clears = 0; }
+      clears++;
+      try { localStorage.setItem('asteraidFinalClears', String(clears)); } catch (e) {}
+
+      // Load rewards set (accept JSON array or CSV)
+      let rewardsSet = new Set();
+      try {
+        const raw = localStorage.getItem('asteraidFinalBossRewards');
+        if (raw) {
+          if (raw[0] === '[') {
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr)) arr.forEach(id => rewardsSet.add(id));
+          } else {
+            raw.split(',').map(s => s.trim()).filter(Boolean).forEach(id => rewardsSet.add(id));
+          }
+        }
+      } catch (e) {}
+
+      const hadCompanion = rewardsSet.has('companion_unlocked');
+      const hadApex = rewardsSet.has('apexRounds');
+      // Unlocks
+      if (clears >= 1) rewardsSet.add('companion_unlocked');
+      if (clears >= 2) rewardsSet.add('apexRounds');
+
+      // Save rewards back as JSON array
+      try { localStorage.setItem('asteraidFinalBossRewards', JSON.stringify(Array.from(rewardsSet))); } catch (e) {}
+
+      // Update globals
+      if (typeof window !== 'undefined') {
+        window.__finalClears = clears;
+        window.__apexRoundsEnabled = rewardsSet.has('apexRounds') || (clears >= 2);
+        window.__companionEnabled = rewardsSet.has('companion_unlocked') || (clears >= 1);
+      }
+
+      // Notify if newly unlocked
+      if ((clears >= 3) && this.deps.showHUDMessage) {
+        this.deps.showHUDMessage('You beat the asteroids again! - No new unlock', 300);
+      }
+      if (!hadApex && (clears >= 2) && this.deps.showHUDMessage) {
+        this.deps.showHUDMessage('You beat the asteroids again! - Apex Rounds unlocked!', 300);
+      }
+      if (!hadCompanion && (clears >= 1) && this.deps.showHUDMessage) {
+        this.deps.showHUDMessage('You beat the asteroids! - Celestial Companion unlocked.', 300);
+      }
+    } catch (e) {}
   }
 }

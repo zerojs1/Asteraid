@@ -10,6 +10,7 @@
 //   setShake: (frames, intensity) => void,
 //   onPlayerHit: () => void,
 //   getFrameCount: () => number,
+//   unlockReward?: (id: string) => boolean,
 // }
 
 export class CrystalTitanBoss {
@@ -52,6 +53,9 @@ export class CrystalTitanBoss {
     this.chargeParticles = [];
     this.beam = null; // { sx, sy, ex, ey, startFrame, duration }
     this.beamParticles = [];
+    this._beamSprite = null;   // offscreen sprite for current beam { canvas, angle }
+    this._beamDot = null;      // cached spark glow dot sprite
+    this._beamParticlePool = []; // simple object pool for beam sparks
     this.nextChargeFrame = this.spawnTime + 360; // start first cycle 6s after spawn
 
     // Display + sprite caching
@@ -75,6 +79,9 @@ export class CrystalTitanBoss {
     // Player freeze state (self-contained if no external handler is provided)
     this.playerFrozenTimer = 0;    // frames remaining
     this.playerFrozenPos = { x: 0, y: 0 };
+    // Invulnerability hit ping (when core is shielded by facets)
+    this.invulnHitTimer = 0;
+    this.invulnHitAngle = 0;
     // CrystalDrone spawn control
     this.droneSpawnCooldown = 180;   // start spawns 3s after boss appears, then every 3s
     this.initSprites();
@@ -97,11 +104,17 @@ export class CrystalTitanBoss {
       this.dpr = currDpr;
       this._lastDpr = currDpr;
       this.initSprites();
+      // Invalidate dynamic cached sprites that depend on DPR
+      this._beamSprite = null;
+      this._beamDot = null;
     }
     if (canvas && (canvas.width !== this._lastCanvasW || canvas.height !== this._lastCanvasH)) {
       this._lastCanvasW = canvas.width;
       this._lastCanvasH = canvas.height;
     }
+
+    // Decay invulnerability hit ping timer
+    if (this.invulnHitTimer > 0) this.invulnHitTimer--;
   }
 
   // Curved blade sprite (DPR-aware). Large canvas to keep it sharp.
@@ -166,6 +179,65 @@ export class CrystalTitanBoss {
     return c;
   }
 
+  // Cached soft glow dot used for beam sparks
+  _buildDot(color = '#ffffff') {
+    const size = 32; // logical pixels (pre-DPR)
+    const c = this.createOffscreen(size, size);
+    if (!c) return null;
+    const g = c.getContext('2d');
+    g.save();
+    g.scale(this.dpr, this.dpr);
+    const cx = size / 2, cy = size / 2;
+    const r = size * 0.35;
+    const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(0.7, 'rgba(255,255,255,0.4)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.globalCompositeOperation = 'lighter';
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(cx, cy, r, 0, Math.PI * 2);
+    g.fill();
+    g.restore();
+    return c;
+  }
+
+  // Build pre-rendered beam sprite for the current shot: a glowing strip
+  _buildBeamSprite(beam) {
+    if (!beam) { this._beamSprite = null; return; }
+    const dx = beam.ex - beam.sx;
+    const dy = beam.ey - beam.sy;
+    const len = Math.max(1, Math.hypot(dx, dy));
+    const angle = Math.atan2(dy, dx);
+    const midx = (beam.sx + beam.ex) * 0.5;
+    const midy = (beam.sy + beam.ey) * 0.5;
+    // Thickness values mirror draw(): outer 14*0.7, inner 6*0.7 plus glow
+    const coreOuter = 14 * 0.7;
+    const coreInner = 6 * 0.7;
+    const pad = 28; // glow pad around
+    const w = len + pad * 2;
+    const h = coreOuter + pad * 2;
+    const c = this.createOffscreen(w, h);
+    if (!c) { this._beamSprite = null; return; }
+    const g = c.getContext('2d');
+    g.save();
+    g.scale(this.dpr, this.dpr);
+    g.translate(pad, h / 2);
+    g.globalCompositeOperation = 'lighter';
+    // Outer glow bar
+    g.shadowColor = '#ffffff';
+    g.shadowBlur = 28;
+    g.globalAlpha = 0.95;
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, -coreOuter / 2, len, coreOuter);
+    // Inner bright core
+    g.shadowBlur = 12;
+    g.globalAlpha = 1.0;
+    g.fillRect(0, -coreInner / 2, len, coreInner);
+    g.restore();
+    this._beamSprite = { canvas: c, angle, midx, midy };
+  }
+
   // Faceted crystal core sprite: diamond-like polygon with internal facet lines and glints
   buildCoreCrystalSprite() {
     const r = this.coreRadius;
@@ -195,9 +267,9 @@ export class CrystalTitanBoss {
     g.closePath();
     // Basalt-like prismatic gradient (cool cyan to warm magenta, bright core)
     const rg = g.createRadialGradient(0, 0, r * 0.1, 0, 0, r * 1.12);
-    rg.addColorStop(0.00, 'rgba(255,255,255,0.95)');
-    rg.addColorStop(0.55, 'rgba(180,240,255,0.90)');
-    rg.addColorStop(1.00, 'rgba(250,170,255,0.75)');
+    rg.addColorStop(0.00, 'rgba(255,255,255,0.70)');
+    rg.addColorStop(0.55, 'rgba(180,240,255,0.62)');
+    rg.addColorStop(1.00, 'rgba(250,170,255,0.48)');
     g.fillStyle = rg;
     g.fill();
     // Crisp outline
@@ -219,11 +291,11 @@ export class CrystalTitanBoss {
     for (let i = 0; i < lines.length; i++) {
       const [a, b] = lines[i];
       const lg = g.createLinearGradient(a.x, a.y, b.x, b.y);
-      lg.addColorStop(0.0, 'rgba(255,255,255,0.25)');
-      lg.addColorStop(0.5, 'rgba(255,255,255,0.8)');
-      lg.addColorStop(1.0, 'rgba(255,255,255,0.25)');
+      lg.addColorStop(0.0, 'rgba(255,255,255,0.18)');
+      lg.addColorStop(0.5, 'rgba(255,255,255,0.55)');
+      lg.addColorStop(1.0, 'rgba(255,255,255,0.18)');
       g.strokeStyle = lg;
-      g.lineWidth = (i % 2 === 0) ? 1.6 : 1.0;
+      g.lineWidth = (i % 2 === 0) ? 1.4 : 0.9;
       g.beginPath();
       g.moveTo(a.x, a.y);
       g.lineTo(b.x, b.y);
@@ -622,6 +694,8 @@ export class CrystalTitanBoss {
             const ey = firePos.y + dy * 1.4;
             // Keep damage duration the same (60f), but remove visual-only fade to cut on-screen time by 50%
             this.beam = { sx: firePos.x, sy: firePos.y, ex, ey, startFrame: frame, duration: 45, fadeDuration: 30 };
+            // Build beam offscreen sprite (glow baked) once for this shot
+            this._buildBeamSprite(this.beam);
             setShake(10, 4);
           }
           this.chargeActive = false;
@@ -651,24 +725,33 @@ export class CrystalTitanBoss {
           if (lineCircleCollision && lineCircleCollision(this.beam.sx, this.beam.sy, this.beam.ex, this.beam.ey, player.x, player.y, player.radius)) {
             onPlayerHit && onPlayerHit();
           }
-          // Spawn beam particles (reduce by ~60%: avg 1.6 per frame)
+          // Spawn beam particles (reduce by ~60%: avg ~1.6 per frame), pooled and capped
           {
-            // Always spawn 1, plus 0.6 chance to spawn 1 more
+            // Always spawn 1, plus a probability for a 2nd based on beam length (preserves look for long beams)
+            const len = Math.hypot(this.beam.ex - this.beam.sx, this.beam.ey - this.beam.sy);
+            const CAP = 90; // safety cap to avoid spikes
             const spawnOne = () => {
+              if (this.beamParticles.length >= CAP) return;
               const tpos = Math.random();
               const x = this.beam.sx + (this.beam.ex - this.beam.sx) * tpos;
               const y = this.beam.sy + (this.beam.ey - this.beam.sy) * tpos;
               const ang = Math.random() * Math.PI * 2;
               const sp = Math.random() * 1.6;
-              this.beamParticles.push({ x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 60, size: 2 + Math.random() * 2 });
+              const p = this._beamParticlePool.pop() || {};
+              p.x = x; p.y = y; p.vx = Math.cos(ang) * sp; p.vy = Math.sin(ang) * sp;
+              p.life = 60; p.size = 2 + Math.random() * 2;
+              this.beamParticles.push(p);
             };
             spawnOne();
-            if (Math.random() < 0.6) spawnOne();
+            // Longer beams get more sparks; shorter beams fewer (0.3..0.7 range)
+            const p2 = Math.max(0.3, Math.min(0.7, len / 600));
+            if (Math.random() < p2) spawnOne();
           }
         } else if (age <= this.beam.duration + (this.beam.fadeDuration || 60)) {
           // Fade period: keep beam for visuals only
         } else {
           this.beam = null;
+          this._beamSprite = null; // free sprite when beam fully gone
         }
       }
 
@@ -681,7 +764,11 @@ export class CrystalTitanBoss {
           p.vx *= 0.985;
           p.vy *= 0.985;
           p.life--;
-          if (p.life <= 0) this.beamParticles.splice(i, 1);
+          if (p.life <= 0) {
+            const dead = this.beamParticles[i];
+            this.beamParticles.splice(i, 1);
+            this._beamParticlePool.push(dead);
+          }
         }
       }
     }
@@ -745,6 +832,24 @@ export class CrystalTitanBoss {
       // Reduce inner diamond size by 30% while keeping outer glows same
       ctx.scale(s * 0.7, s * 0.7);
       ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
+
+    // Impact arc ping to indicate invulnerable core bounce (facets present)
+    if (this.facets.length > 0 && this.invulnHitTimer > 0) {
+      const a = this.invulnHitAngle;
+      const fade = this.invulnHitTimer / 12;
+      const r = this.coreRadius + 8;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.4 + 0.6 * fade;
+      ctx.shadowBlur = 16 + 12 * fade;
+      ctx.shadowColor = '#8ff';
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, r, a - 0.6, a + 0.6);
+      ctx.stroke();
       ctx.restore();
     }
     // Live prism shimmer accent
@@ -940,44 +1045,47 @@ export class CrystalTitanBoss {
       ctx.restore();
     }
 
-    // Beam visuals: thick white-hot core with glow (no chromatic aberration), plus trailing sparks
+    // Beam visuals: pre-rendered glow strip sprite (no per-frame shadowBlur), plus trailing sparks
     if (this.beam) {
       const { sx, sy, ex, ey } = this.beam;
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      // Beam stroke helper
-      const drawStroke = (dx, dy, color, width, alpha, blur) => {
-        ctx.strokeStyle = color;
-        ctx.lineWidth = width;
-        ctx.shadowColor = color;
-        ctx.shadowBlur = blur;
-        ctx.globalAlpha = alpha;
-        ctx.beginPath();
-        ctx.moveTo(sx + dx, sy + dy);
-        ctx.lineTo(ex + dx, ey + dy);
-        ctx.stroke();
-      };
-      // White-hot core (30% thinner) with 1s fade-out after active duration
+      // Fade factor (matches previous)
       const ageDraw = getFrameCount() - this.beam.startFrame;
       let vis = 1;
       if (ageDraw > this.beam.duration) {
         const fd = this.beam.fadeDuration || 60;
         vis = Math.max(0, 1 - (ageDraw - this.beam.duration) / fd);
       }
-      const wOuter = 14 * 0.7; // 30% thinner
-      const wInner = 6 * 0.7;  // 30% thinner
-      drawStroke(0, 0, '#ffffff', wOuter, 0.95 * vis, 28 * vis);
-      drawStroke(0, 0, '#ffffff', wInner, 1.0 * vis, 12 * vis);
+      if (this._beamSprite && this._beamSprite.canvas) {
+        const spr = this._beamSprite;
+        // Draw sprite centered on precomputed midpoint
+        const midx = spr.midx;
+        const midy = spr.midy;
+        ctx.save();
+        ctx.translate(midx, midy);
+        ctx.rotate(spr.angle);
+        ctx.globalAlpha = vis;
+        // sprite drawn centered; height already encodes thickness and glow
+        ctx.drawImage(spr.canvas, -spr.canvas.width / (2 * this.dpr), -spr.canvas.height / (2 * this.dpr), spr.canvas.width / this.dpr, spr.canvas.height / this.dpr);
+        ctx.restore();
+      }
 
       // Beam sparks
+      // Use cached glow dot sprite (no per-particle shadowBlur)
+      if (!this._beamDot) this._beamDot = this._buildDot('#ffffff');
+      const dot = this._beamDot;
+      const canvas = this.deps.canvas;
+      const margin = 32;
+      const maxX = (canvas && canvas.width) ? canvas.width + margin : Infinity;
+      const maxY = (canvas && canvas.height) ? canvas.height + margin : Infinity;
       for (const p of this.beamParticles) {
-        ctx.globalAlpha = Math.max(0, Math.min(1, p.life / 60));
-        ctx.fillStyle = '#ffffff';
-        ctx.shadowColor = '#ffffff';
-        ctx.shadowBlur = 12;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size * 0.6, 0, Math.PI * 2);
-        ctx.fill();
+        const a = Math.max(0, Math.min(1, p.life / 60));
+        if (a <= 0) continue;
+        if (canvas && (p.x < -margin || p.y < -margin || p.x > maxX || p.y > maxY)) continue; // frustum cull
+        const s = p.size * 1.0; // match prior visual scale
+        ctx.globalAlpha = a;
+        ctx.drawImage(dot, p.x - s, p.y - s, s * 2, s * 2);
       }
       ctx.restore();
     }
@@ -1048,14 +1156,35 @@ export class CrystalTitanBoss {
         return false;
       }
     }
-    // If facets cleared, allow core damage (bullet consumed)
+    // Core interaction
     if (this.facets.length === 0) {
+      // Vulnerable: allow core damage (bullet consumed)
       const dx = bullet.x - this.x, dy = bullet.y - this.y;
       if (Math.hypot(dx, dy) < this.coreRadius + bullet.radius) {
         this.coreHealth--;
         createExplosion(this.x, this.y, 90, '#f9f');
         if (this.coreHealth <= 0) this.onDefeated();
         return true; // bullet consumed on core hit
+      }
+    }
+    else {
+      // Invulnerable core: reflect bullets and show ping
+      const dx = bullet.x - this.x, dy = bullet.y - this.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < this.coreRadius + bullet.radius) {
+        const nx = dx / (dist || 1), ny = dy / (dist || 1);
+        const dot = bullet.vx * nx + bullet.vy * ny;
+        bullet.vx = bullet.vx - 2 * dot * nx;
+        bullet.vy = bullet.vy - 2 * dot * ny;
+        const pad = 2;
+        bullet.x = this.x + nx * (this.coreRadius + bullet.radius + pad);
+        bullet.y = this.y + ny * (this.coreRadius + bullet.radius + pad);
+        if (this.deps.getFrameCount) bullet._skipCollisionsFrame = this.deps.getFrameCount();
+        this.invulnHitTimer = 12;
+        this.invulnHitAngle = Math.atan2(ny, nx);
+        createExplosion && createExplosion(bullet.x, bullet.y, 6, '#8ff', 'micro');
+        try { if (this.deps.audio && this.deps.audio.playSfx) this.deps.audio.playSfx('hit'); } catch (e) {}
+        return false;
       }
     }
     return false;
@@ -1082,11 +1211,26 @@ export class CrystalTitanBoss {
         break;
       }
     }
-    if (!hit && this.facets.length === 0) {
+    if (!hit) {
       const dx = particle.x - this.x, dy = particle.y - this.y;
-      if (Math.hypot(dx, dy) < this.coreRadius + 12) {
-        this.coreHealth = Math.max(0, this.coreHealth - 1);
-        if (this.coreHealth === 0) this.onDefeated();
+      const dist = Math.hypot(dx, dy);
+      if (this.facets.length === 0) {
+        if (dist < this.coreRadius + 12) {
+          this.coreHealth = Math.max(0, this.coreHealth - 1);
+          if (this.coreHealth === 0) this.onDefeated();
+        }
+      } else if (dist < this.coreRadius + 12) {
+        // Invulnerable core: reflect particle
+        const nx = dx / (dist || 1), ny = dy / (dist || 1);
+        const dot = (particle.vx || 0) * nx + (particle.vy || 0) * ny;
+        particle.vx = (particle.vx || 0) - 2 * dot * nx;
+        particle.vy = (particle.vy || 0) - 2 * dot * ny;
+        particle.x = this.x + nx * (this.coreRadius + 12 + 2);
+        particle.y = this.y + ny * (this.coreRadius + 12 + 2);
+        this.invulnHitTimer = 12;
+        this.invulnHitAngle = Math.atan2(ny, nx);
+        createExplosion && createExplosion(particle.x, particle.y, 6, '#8ff', 'micro');
+        try { if (this.deps.audio && this.deps.audio.playSfx) this.deps.audio.playSfx('hit'); } catch (e) {}
       }
     }
   }
@@ -1133,7 +1277,7 @@ export class CrystalTitanBoss {
 
   onDefeated() {
     if (this.defeated) return;
-    const { createExplosion, powerups, Powerup, enemyBullets, setShake, awardPoints } = this.deps;
+    const { createExplosion, powerups, Powerup, enemyBullets, setShake, awardPoints, addEXP, unlockReward } = this.deps;
     this.defeated = true;
     createExplosion(this.x, this.y, this.coreRadius * 3, '#f9f');
     setShake && setShake(24, 8);
@@ -1155,7 +1299,9 @@ export class CrystalTitanBoss {
     // Clear boss bullets on defeat
     enemyBullets.length = 0;
     // EXP: Award 200 EXP for defeating Crystal Titan boss
-    if (this.deps.addEXP) this.deps.addEXP(200, 'boss-crystaltitan');
+    if (typeof addEXP === 'function') addEXP(200, 'boss-crystaltitan');
+    // Unlock cosmetic trail on first defeat
+    try { if (typeof unlockReward === 'function') unlockReward('trail_crystaltitan'); } catch (e) {}
   }
 
   pickPowerupType() {

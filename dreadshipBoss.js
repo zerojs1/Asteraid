@@ -6,6 +6,8 @@
 //   player,
 //   enemyBullets, drones, powerups,
 //   EnemyBullet, Drone, Powerup,
+//   // Mines support for Level 8 behavior
+//   mines, Mine,
 //   createExplosion, awardPoints, lineCircleCollision,
 //   setShake: (frames, intensity) => void,
 //   onPlayerHit: () => void,
@@ -49,6 +51,11 @@ export class DreadshipBoss {
     this.coreExposedTimer = 0;
 
     this.droneCooldown = 200;
+    // Timed mine spawning (Level 8): one every ~2s up to a small cap
+    this.mineCooldown = 120; // frames between spawns (legacy counter; see frame-based logic)
+    this.mineCap = 5;        // max active (non-exploded) mines while boss is alive
+    this.lastMineSpawnFrame = this.spawnTime || 0; // track last frame a mine was spawned (for legacy)
+    this._mineTimer = 0;     // internal per-boss timer to drive spawns reliably
     
     // DPR-aware sprite cache
     this.dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
@@ -64,6 +71,9 @@ export class DreadshipBoss {
     // Laser embers
     this.laserEmbers = [];
     this.laserEmberSprite = null;
+    // Brief visual ping when core is hit while invulnerable
+    this.invulnHitTimer = 0; // frames remaining
+    this.invulnHitAngle = 0; // impact angle for arc visualization
   }
 
   // --- Sprite pre-render helpers ---
@@ -289,8 +299,15 @@ export class DreadshipBoss {
     this.targetY = my + Math.random() * (canvas.height * 0.6);
   }
 
+  // Core is only vulnerable when exposed by laser AND all turrets are destroyed
+  isCoreVulnerable() {
+    return (this.coreExposedTimer > 0) && (this.turrets.length === 0);
+  }
+
   update() {
     const { player, enemyBullets, EnemyBullet, drones, Drone, lineCircleCollision, onPlayerHit } = this.deps;
+    // Advance internal timers
+    this._mineTimer = (this._mineTimer || 0) + 1;
     this.rotate += this.rotateSpeed;
     // Move slowly toward target; retarget when close
     if (typeof this.targetX === 'number' && typeof this.targetY === 'number') {
@@ -383,6 +400,7 @@ export class DreadshipBoss {
     }
 
     if (this.coreExposedTimer > 0) this.coreExposedTimer--;
+    if (this.invulnHitTimer > 0) this.invulnHitTimer--;
 
     // Update embers
     if (this.laserEmbers && this.laserEmbers.length) {
@@ -419,6 +437,57 @@ export class DreadshipBoss {
       }
       this.droneCooldown = 200;
     }
+
+    // Mine spawning: every 2s, up to 5 active (non-exploded) mines, while boss is alive
+    if (!this.defeated && this.deps && this.deps.mines && this.deps.Mine) {
+      if (this._mineTimer >= 120) {
+        const { Mine } = this.deps;
+        const mines = (this.deps.getMines && typeof this.deps.getMines === 'function') ? this.deps.getMines() : this.deps.mines;
+        // Count only mines spawned by the Dreadship to avoid interference from prior level mines
+        const dreadMinesArr = Array.isArray(mines) ? mines.filter(m => !m.exploded && m._owner === 'dreadship') : [];
+        const activeMines = dreadMinesArr.length;
+        //try { if (typeof console !== 'undefined') console.debug('[Dreadship] Mine window hit: active=', activeMines, 'cap=', this.mineCap); } catch (e) {}
+        if (activeMines < this.mineCap) {
+          // Spawn outside the hull so it's not hidden under the boss sprite
+          const aim = (player && typeof player.x === 'number') ? Math.atan2(player.y - this.y, player.x - this.x) : Math.random() * Math.PI * 2;
+          const spawnR = this.hullRadius + 22;
+          const sx = this.x + Math.cos(aim) * spawnR;
+          const sy = this.y + Math.sin(aim) * spawnR;
+          const m = new Mine(sx, sy);
+          // Tag ownership so we cap only these
+          m._owner = 'dreadship';
+          // Nudge velocity slightly toward the player so it drifts toward them
+          const dx = (player && typeof player.x === 'number') ? (player.x - sx) : 0;
+          const dy = (player && typeof player.y === 'number') ? (player.y - sy) : 0;
+          const dist = Math.hypot(dx, dy) || 1;
+          const ux = dx / dist, uy = dy / dist;
+          const push = 0.35; // subtle forward push
+          m.vx += ux * push;
+          m.vy += uy * push;
+          if (this.deps.addMine && typeof this.deps.addMine === 'function') {
+            try { this.deps.addMine(m); } catch (e) { mines && mines.push(m); }
+          } else {
+            mines && mines.push(m);
+          }
+          // Enforce hard cap in case of edge cases (e.g., multiple spawns same frame)
+          const liveMines = (this.deps.getMines && typeof this.deps.getMines === 'function') ? this.deps.getMines() : this.deps.mines;
+          if (Array.isArray(liveMines)) {
+            const dread = liveMines.filter(x => !x.exploded && x._owner === 'dreadship');
+            if (dread.length > this.mineCap) {
+              // Remove oldest extras beyond cap
+              const extras = dread.length - this.mineCap;
+              for (let i = 0; i < extras; i++) {
+                const victim = dread[i];
+                const idx = liveMines.indexOf(victim);
+                if (idx >= 0) liveMines.splice(idx, 1);
+              }
+            }
+          }
+        }
+        // Reset cadence whether or not we spawned one (keeps 2s rhythm)
+        this._mineTimer = 0;
+      }
+    }
   }
 
   draw() {
@@ -435,7 +504,7 @@ export class DreadshipBoss {
       ctx.drawImage(this.hullSprite, -dw / 2, -dh / 2, dw, dh);
     }
     const coreFiring = this.laserActiveTimer > 0;
-    const coreGlow = coreFiring ? '#f66' : (this.coreExposedTimer > 0 ? '#0f0' : 'rgba(0,255,0,0.65)');
+    const coreGlow = coreFiring ? '#f66' : (this.isCoreVulnerable() ? '#0f0' : 'rgba(0,255,0,0.65)');
     // Time-based pulsing while firing
     const pulse = coreFiring ? (1 + 0.18 * Math.sin(t * 0.35)) : 1;
     const baseBlur = coreFiring ? 26 : (this.coreExposedTimer > 0 ? 18 : 8);
@@ -455,12 +524,29 @@ export class DreadshipBoss {
       ctx.restore();
     }
     // Hex shield overlay when core is NOT exposed
-    if (this.shieldSprite && this.coreExposedTimer === 0) {
+    if (this.shieldSprite && !this.isCoreVulnerable()) {
       const dwS = this.shieldSprite.width / this.dpr;
       const dhS = this.shieldSprite.height / this.dpr;
       ctx.globalAlpha = this.laserWarningTimer > 0 ? 0.38 : 0.22;
       ctx.drawImage(this.shieldSprite, -dwS / 2, -dhS / 2, dwS, dhS);
       ctx.globalAlpha = 1;
+    }
+    // Impact arc ping to indicate invulnerability when hit
+    if (!this.isCoreVulnerable() && this.invulnHitTimer > 0) {
+      const a = this.invulnHitAngle;
+      const fade = this.invulnHitTimer / 12; // 0..1 fade over ~12 frames
+      const r = this.coreRadius + 8;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.4 + 0.6 * fade;
+      ctx.shadowBlur = 16 + 12 * fade;
+      ctx.shadowColor = '#8ff';
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, a - 0.6, a + 0.6);
+      ctx.stroke();
+      ctx.restore();
     }
     // Orbiting rune lights along the hull perimeter (subtle, animated)
     {
@@ -619,7 +705,7 @@ export class DreadshipBoss {
         return true;
       }
     }
-    if (this.coreExposedTimer > 0) {
+    if (this.isCoreVulnerable()) {
       const dx = bullet.x - this.x, dy = bullet.y - this.y;
       if (Math.hypot(dx, dy) < this.coreRadius + bullet.radius) {
         this.coreHealth--;
@@ -627,6 +713,33 @@ export class DreadshipBoss {
         this.deps.createExplosion && this.deps.createExplosion(this.x, this.y, 90, '#f0f');
         if (this.coreHealth <= 0) this.onDefeated();
         return true;
+      }
+    } else {
+      // Core not vulnerable: bounce bullets off and show a visual ping
+      const dx = bullet.x - this.x, dy = bullet.y - this.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < this.coreRadius + bullet.radius) {
+        // Normalized normal vector
+        const nx = dx / (dist || 1), ny = dy / (dist || 1);
+        // Reflect velocity: v' = v - 2 (v·n) n
+        const dot = (bullet.vx || 0) * nx + (bullet.vy || 0) * ny;
+        bullet.vx = (bullet.vx || 0) - 2 * dot * nx;
+        bullet.vy = (bullet.vy || 0) - 2 * dot * ny;
+        // Push bullet just outside the core to avoid repeated collisions
+        const pad = 1.5;
+        bullet.x = this.x + nx * (this.coreRadius + bullet.radius + pad);
+        bullet.y = this.y + ny * (this.coreRadius + bullet.radius + pad);
+        // Mark to skip collision checks for the rest of this frame
+        if (this.deps.getFrameCount) bullet._skipCollisionsFrame = this.deps.getFrameCount();
+        // Visual ping
+        this.invulnHitTimer = 12;
+        this.invulnHitAngle = Math.atan2(ny, nx);
+        // Tiny spark
+        createExplosion && createExplosion(bullet.x, bullet.y, 6, '#8ff', 'micro');
+        // Bounce SFX
+        try { if (this.deps.audio && this.deps.audio.playSfx) this.deps.audio.playSfx('hit'); } catch (e) {}
+        // Do NOT consume the bullet
+        return false;
       }
     }
     return false;
@@ -650,11 +763,29 @@ export class DreadshipBoss {
         hit = true; break;
       }
     }
-    if (!hit && this.coreExposedTimer > 0) {
+    if (!hit && this.isCoreVulnerable()) {
       const dx = particle.x - this.x, dy = particle.y - this.y;
       if (Math.hypot(dx, dy) < this.coreRadius + 12) {
         this.coreHealth = Math.max(0, this.coreHealth - 1);
         if (this.coreHealth === 0) this.onDefeated();
+      }
+    } else if (!hit && !this.isCoreVulnerable()) {
+      // Reflect damaging particles (e.g., shards) off invulnerable core
+      const dx = particle.x - this.x, dy = particle.y - this.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < this.coreRadius + 12) {
+        const nx = dx / (dist || 1), ny = dy / (dist || 1);
+        const dot = (particle.vx || 0) * nx + (particle.vy || 0) * ny;
+        particle.vx = (particle.vx || 0) - 2 * dot * nx;
+        particle.vy = (particle.vy || 0) - 2 * dot * ny;
+        particle.x = this.x + nx * (this.coreRadius + 12 + 2);
+        particle.y = this.y + ny * (this.coreRadius + 12 + 2);
+        // Visual ping
+        this.invulnHitTimer = 12;
+        this.invulnHitAngle = Math.atan2(ny, nx);
+        createExplosion && createExplosion(particle.x, particle.y, 6, '#8ff', 'micro');
+        // Bounce SFX
+        try { if (this.deps.audio && this.deps.audio.playSfx) this.deps.audio.playSfx('hit'); } catch (e) {}
       }
     }
   }
@@ -677,7 +808,7 @@ export class DreadshipBoss {
         }
       }
     }
-    if (this.coreExposedTimer > 0 && lineCircleCollision && lineCircleCollision(x1, y1, x2, y2, this.x, this.y, this.coreRadius)) {
+    if (this.isCoreVulnerable() && lineCircleCollision && lineCircleCollision(x1, y1, x2, y2, this.x, this.y, this.coreRadius)) {
       this.coreHealth = Math.max(0, this.coreHealth - 2);
       // no points for core hits (fixed award on defeat)
       createExplosion && createExplosion(this.x, this.y, 90, '#f0f');
@@ -710,7 +841,7 @@ export class DreadshipBoss {
       }
     }
     // Core only when exposed
-    if (this.coreExposedTimer > 0) {
+    if (this.isCoreVulnerable()) {
       const dx = cx - this.x, dy = cy - this.y;
       if (Math.hypot(dx, dy) <= radius + this.coreRadius) {
         any = true;
@@ -733,7 +864,7 @@ export class DreadshipBoss {
 
   onDefeated() {
     if (this.defeated) return;
-    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints } = this.deps;
+    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints, unlockReward } = this.deps;
     this.defeated = true;
     awardPoints && awardPoints(500, this.x, this.y, true); // fixed award only on defeat
     createExplosion && createExplosion(this.x, this.y, this.hullRadius * 2.6, '#f0f');
@@ -755,6 +886,8 @@ export class DreadshipBoss {
     if (drones) drones.length = 0;
     // EXP: Award 150 EXP for defeating Dreadship boss
     if (this.deps.addEXP) this.deps.addEXP(150, 'boss-dreadship');
+    // Unlock cosmetic ship skin on first defeat
+    try { if (typeof unlockReward === 'function') unlockReward('skin_dreadship'); } catch (e) {}
   }
 
   maybeDropPowerup(x, y, chance) {

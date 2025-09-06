@@ -225,6 +225,10 @@ export class PhasedAsteroid {
       createExplosion(ix, iy, 3, '#c0f', 'micro');
     }
     this.hits--;
+    // SFX: impact if still alive after the hit
+    if (deps && typeof deps.playSfx === 'function' && this.hits > 0) {
+      deps.playSfx('hit');
+    }
     if (this.hits <= 0) {
       this.destroy(deps);
       return true;
