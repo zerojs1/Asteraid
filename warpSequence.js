@@ -8,6 +8,9 @@ export class WarpSequence {
     this.canvas = opts.canvas; // main canvas for sizing
     this.audio = opts.audio || null; // AudioManager instance
     this.glRenderer = opts.glRenderer || null; // optional WebGL overlay (unused for now)
+    // Quality preset: 'auto' | 'high' | 'medium' | 'low'
+    this.quality = 'medium';
+    this._lowQuality = true;
 
     // Offscreen layer for warp rendering so we can scale/fade it for the iris exit
     this.layer = document.createElement('canvas');
@@ -40,24 +43,37 @@ export class WarpSequence {
     // Tunnel ring cache setup
     this.ringTime = 0;
 
+    // Runtime-tunable feature flags (set by _applyQualityConfig)
+    this.flags = {
+      ringCount: 18,
+      ringEchoes: 3,
+      useShadows: true,
+      useFilters: true,
+      starGradient: true,
+      bgStarCount: 400,
+      starCount: 200,
+      debrisCount: 10,
+      scanlines: true,
+    };
+
     // Star streaks and debris
     this.stars = [];
     this.debris = [];
+    // Background warp stars (config set in _applyQualityConfig)
+    this.bgCfg = {
+      count: 400,
+      speedBase: 200,
+      speedVar: 420,
+      sizeMin: 0.2,
+      sizeVar: 0.6,
+      alphaMin: 0.11,
+      alphaVar: 0.45,
+      speedMulScale: 0.22,
+      overallSpeedFactor: 0.2,
+    };
+    this._applyQualityConfig(this.quality);
     this._initParticles();
 
-    // Background warp stars (drawn beneath tunnel/debris/UI)
-    // Tweakable config: adjust density, sizes, and speed behavior from one place
-    this.bgCfg = {
-      count: 400,            // density: number of background stars
-      speedBase: 200,        // px/s base radial speed
-      speedVar: 420,         // px/s added random range
-      sizeMin: 0.2,          // minimum line width base
-      sizeVar: 0.6,          // added random to size
-      alphaMin: 0.11,        // min alpha per star
-      alphaVar: 0.45,        // additional alpha range
-      speedMulScale: 0.22,   // how much phase speed (starSpeedMul) influences bg star speed
-      overallSpeedFactor: 0.2 // global multiplier to slow/speed all bg stars (0.5 = 50% speed)
-    };
     this.bgStars = [];
     this._initBgStars();
 
@@ -69,18 +85,20 @@ export class WarpSequence {
   _resizeLayer() {
     const w = this.width;
     const h = this.height;
-    const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    // Lower DPR in low quality to reduce fill cost
+    const rawDpr = Math.max(1, window.devicePixelRatio || 1);
+    const dpr = this._lowQuality ? 1 : Math.min(2, rawDpr);
     this.dpr = dpr;
     this.layer.width = Math.ceil(w * dpr);
     this.layer.height = Math.ceil(h * dpr);
     this.layerCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.layerCtx.imageSmoothingEnabled = true;
-    if ('imageSmoothingQuality' in this.layerCtx) this.layerCtx.imageSmoothingQuality = 'high';
+    if ('imageSmoothingQuality' in this.layerCtx) this.layerCtx.imageSmoothingQuality = this._lowQuality ? 'low' : 'high';
   }
 
   _initParticles() {
     // Populate stars
-    const starCount = 200; // lightweight
+    const starCount = this.flags.starCount; // tuned by quality
     this.stars.length = 0;
     for (let i = 0; i < starCount; i++) {
       this.stars.push({
@@ -91,7 +109,7 @@ export class WarpSequence {
       });
     }
     // Debris silhouettes (slow parallax)
-    const debrisCount = 10;
+    const debrisCount = this.flags.debrisCount;
     this.debris.length = 0;
     for (let i = 0; i < debrisCount; i++) {
       const size = 50 + Math.random() * 180;
@@ -123,6 +141,29 @@ export class WarpSequence {
     }
   }
 
+  _applyQualityConfig(preset) {
+    // Decide preset if 'auto' based on approximate pixel cost
+    let q = preset;
+    if (preset === 'auto') {
+      const pixels = (this.width || 800) * (this.height || 600) * (window.devicePixelRatio || 1);
+      // Very rough heuristic thresholds
+      if (pixels > 2_000_000) q = 'low';
+      else if (pixels > 1_000_000) q = 'medium';
+      else q = 'high';
+    }
+    this._lowQuality = (q === 'low');
+    if (q === 'high') {
+      this.flags = { ringCount: 18, ringEchoes: 3, useShadows: true, useFilters: true, starGradient: true, bgStarCount: 400, starCount: 200, debrisCount: 10, scanlines: true };
+      this.bgCfg.count = 400;
+    } else if (q === 'medium') {
+      this.flags = { ringCount: 12, ringEchoes: 2, useShadows: true, useFilters: false, starGradient: true, bgStarCount: 260, starCount: 140, debrisCount: 8, scanlines: true };
+      this.bgCfg.count = 260;
+    } else { // low
+      this.flags = { ringCount: 9, ringEchoes: 1, useShadows: false, useFilters: false, starGradient: false, bgStarCount: 160, starCount: 100, debrisCount: 6, scanlines: false };
+      this.bgCfg.count = 160;
+    }
+  }
+
   start() {
     this.phase = 'spinup';
     this.t = 0;
@@ -137,6 +178,13 @@ export class WarpSequence {
     try { if (this.audio) this.audio.startWarpLoop(); } catch (e) {}
     // Optional initial telegraph ping
     //try { if (this.audio) this.audio.playSfx('chargeStart'); } catch (e) {}
+    // If auto quality, re-evaluate once at start using current canvas size
+    if (this.quality === 'auto') {
+      this._applyQualityConfig('auto');
+      this._resizeLayer();
+      this._initParticles();
+      this._initBgStars();
+    }
   }
 
   isDone() { return this.phase === 'done'; }
@@ -283,6 +331,11 @@ export class WarpSequence {
         const y = Math.sin(s.a) * s.r;
         const px = Math.cos(s.a) * Math.max(0, s.r - len);
         const py = Math.sin(s.a) * Math.max(0, s.r - len);
+        // Offscreen culling (expanded bounds in local space)
+        const m = Math.max(w, h) * 0.65;
+        if ((x < -m && px < -m) || (x > m && px > m) || (y < -m && py < -m) || (y > m && py > m)) {
+          continue;
+        }
         g.strokeStyle = 'rgba(255,255,255,1)';
         g.globalAlpha = Math.min(1, this.bgCfg.alphaMin + s.b * this.bgCfg.alphaVar);
         g.lineWidth = Math.max(1, s.size * (0.8 + this.getStarSpeedMul() * 0.06));
@@ -297,15 +350,19 @@ export class WarpSequence {
     // Draw warp tunnel rings (brighter + glow)
     g.save();
     g.translate(cx, cy);
-    const ringCount = 18;
+    const ringCount = this.flags.ringCount;
     const baseR = 18;
     for (let i = 0; i < ringCount; i++) {
       const t = this.ringTime + i * 0.13;
       const compress = 1.0 + Math.sin(t * 3.2) * 0.22; // spacing modulation
       const r = baseR + i * 26 * compress + (t * 150) % 26;
       const alpha = Math.max(0, 1 - i / ringCount) * 0.85; // brighter
-      g.shadowColor = 'rgba(120,220,255,0.9)';
-      g.shadowBlur = 12;
+      if (this.flags.useShadows) {
+        g.shadowColor = 'rgba(120,220,255,0.9)';
+        g.shadowBlur = 12;
+      } else {
+        g.shadowBlur = 0;
+      }
       g.beginPath();
       g.strokeStyle = `rgba(170,240,255,${alpha})`;
       g.lineWidth = 3.0;
@@ -313,7 +370,7 @@ export class WarpSequence {
       g.arc(0, 0, r, 0, Math.PI * 2);
       g.stroke();
       // spiral "curling" line with blur + trailing echoes
-      g.filter = 'blur(0.6px)';
+      if (this.flags.useFilters) g.filter = 'blur(0.6px)'; else g.filter = 'none';
       g.beginPath();
       g.strokeStyle = `rgba(200,230,255,${alpha * 0.9})`;
       g.lineWidth = 1.6;
@@ -323,7 +380,7 @@ export class WarpSequence {
       g.lineTo(-rx * 0.2, -ry * 0.2);
       g.stroke();
       // trailing echoes
-      for (let k = 1; k <= 3; k++) {
+      for (let k = 1; k <= this.flags.ringEchoes; k++) {
         const fade = (0.6 - k * 0.15) * alpha;
         if (fade <= 0) break;
         const angT = ang - k * 0.15;
@@ -351,16 +408,23 @@ export class WarpSequence {
       const tail = 1.0;
       const x2 = Math.cos(ang - 0.05) * (s.r - len * tail);
       const y2 = Math.sin(ang - 0.05) * (s.r - len * tail);
-      const hue = s.hue + Math.min(60, (this.getStarSpeedMul() - 1) * 3);
-      // Gradient stroke: fully opaque from midpoint to head, fade to 0 at tail
-      const grad = g.createLinearGradient(x2, y2, x, y);
-      grad.addColorStop(0.0, `hsla(${hue|0}, 100%, 82%, 0.0)`); // tail end transparent
-      grad.addColorStop(0.5, `hsla(${hue|0}, 100%, 82%, 1.0)`); // mid opaque
-      grad.addColorStop(1.0, `hsla(${hue|0}, 100%, 82%, 1.0)`); // head opaque
-      g.strokeStyle = grad;
+      // Offscreen culling in local space
+      const m = Math.max(w, h) * 0.65;
+      if ((x < -m && x2 < -m) || (x > m && x2 > m) || (y < -m && y2 < -m) || (y > m && y2 > m)) {
+        continue;
+      }
+      if (this.flags.starGradient) {
+        const hue = s.hue + Math.min(60, (this.getStarSpeedMul() - 1) * 3);
+        const grad = g.createLinearGradient(x2, y2, x, y);
+        grad.addColorStop(0.0, `hsla(${hue|0}, 100%, 82%, 0.0)`);
+        grad.addColorStop(0.5, `hsla(${hue|0}, 100%, 82%, 1.0)`);
+        grad.addColorStop(1.0, `hsla(${hue|0}, 100%, 82%, 1.0)`);
+        g.strokeStyle = grad;
+      } else {
+        g.strokeStyle = 'rgba(220,240,255,0.9)';
+      }
       g.lineWidth = 1.6;
-      g.shadowColor = 'rgba(200,240,255,0.9)';
-      g.shadowBlur = 8;
+      if (this.flags.useShadows) { g.shadowColor = 'rgba(200,240,255,0.9)'; g.shadowBlur = 8; } else { g.shadowBlur = 0; }
       g.beginPath();
       g.moveTo(x2, y2);
       g.lineTo(x, y);
@@ -376,6 +440,9 @@ export class WarpSequence {
       g.translate(d.x, d.y);
       g.rotate(d.rot);
       const s = d.size * (1.2 - d.z * 0.6);
+      // Offscreen culling for debris
+      const half = Math.max(s * 0.6, s * 0.4);
+      if (d.x + half < -20 || d.x - half > w + 20 || d.y + half < -20 || d.y - half > h + 20) { g.restore(); continue; }
       g.fillStyle = `rgba(0,0,0,${d.alpha})`;
       g.strokeStyle = `rgba(80,120,160,${d.alpha * 0.2})`;
       g.lineWidth = 2;
@@ -390,7 +457,7 @@ export class WarpSequence {
 
     // Screen FX: vignette + scanline
     this._drawVignette(g, this.vignetteTight);
-    this._drawScanlines(g);
+    if (this.flags.scanlines) this._drawScanlines(g);
 
     // UI: text (brighter), no skip
     this._drawUI(g);
