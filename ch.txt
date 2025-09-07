@@ -1,0 +1,14 @@
+const ALL_REWARDS = [
+   // Stats and kits
+   'maxArmor+1','speed+5%','life+1','bulletRange+10%','drop+10%',
+   'laser+1','bomb+1','shield+1sec','eliteKit',
+   // Skins
+   'skin_cobalt','skin_emerald','skin_vaporwave','skin_crimson',
+   'skin_gold','skin_midnight','skin_arctic','skin_aurora',
+   // Trails (level-based)
+   'trail_stardust','trail_neonPurple','trail_sunset','trail_gauntlet','trail_iceBlue',
+   'trail_mint','trail_plasma','trail_ember',
+   // Boss-unlocked trails
+   'trail_colossus','trail_crystaltitan','skin_dreadship','skin_alienmothership',
+ ];
+ localStorage.setItem('asteraidUnlockedRewards', JSON.stringify(ALL_REWARDS));
