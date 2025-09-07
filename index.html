@@ -5468,8 +5468,8 @@
                 ctx.lineCap = 'round';
                 const n = rainbowRibbon.length;
                 // Dynamic decimation for long ribbons to reduce draw calls
-                let step = 1;
-                if (n > 180) step = 3; else if (n > 120) step = 2;
+                let step = 2;
+                if (n > 180) step = 6; else if (n > 120) step = 4;
                 // Precompute base hue once per frame
                 const baseHue = (frameCount * 6) % 360;
                 // Expanded viewport bounds for simple offscreen culling
