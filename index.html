@@ -5174,41 +5174,72 @@
                 ctx.globalCompositeOperation = 'lighter';
                 ctx.lineCap = 'round';
                 const n2 = gauntletRibbon.length;
-                for (let i = 0; i < n2 - 1; i++) {
+                // Dynamic decimation to reduce draw calls on longer ribbons
+                let step2 = 2;
+                if (n2 > 18) step2 = 4; else if (n2 > 14) step2 = 2; // typical length ~20
+                // Expanded bounds for simple offscreen culling
+                const w2 = canvas.width, h2 = canvas.height; const M2 = 24;
+                // Glow pass (batch shadowBlur instead of per-segment)
+                ctx.shadowBlur = 10; // slightly cheaper than 14
+                for (let i = 0; i < n2 - 1; i += step2) {
                     const p0 = gauntletRibbon[i];
                     const p1 = gauntletRibbon[i + 1];
-                    if (Math.abs(p1.x - p0.x) > canvas.width * 0.5 || Math.abs(p1.y - p0.y) > canvas.height * 0.5) continue;
+                    if (!p1) break;
+                    // Avoid wrapping seams creating long cross-screen lines
+                    if (Math.abs(p1.x - p0.x) > w2 * 0.5 || Math.abs(p1.y - p0.y) > h2 * 0.5) continue;
+                    // Cull fully offscreen segments
+                    if ((p0.x < -M2 && p1.x < -M2) || (p0.x > w2 + M2 && p1.x > w2 + M2) ||
+                        (p0.y < -M2 && p1.y < -M2) || (p0.y > h2 + M2 && p1.y > h2 + M2)) {
+                        continue;
+                    }
                     const t = i / (n2 - 1);
-                    const width = 1.5 + t * 6; // head thicker
+                    const width = 1.4 + t * 5.5; // slightly thinner for perf
                     // Color blend: gold -> white -> orange across the ribbon
                     let r, g, b;
                     if (t < 0.5) {
                         const u = t * 2; // 0..1
-                        // gold(255,215,0) -> white(255,255,255)
                         r = 255;
                         g = Math.round(215 + (255 - 215) * u);
                         b = Math.round(0 + (255 - 0) * u);
                     } else {
                         const u = (t - 0.5) * 2; // 0..1
-                        // white(255,255,255) -> orange(255,165,0)
                         r = 255;
                         g = Math.round(255 + (165 - 255) * u);
                         b = Math.round(255 + (0 - 255) * u);
                     }
                     const color = `rgb(${r},${g},${b})`;
-                    // Glow pass
+                    // Glow stroke
                     ctx.strokeStyle = color;
                     ctx.shadowColor = color;
-                    ctx.shadowBlur = 14;
-                    ctx.globalAlpha = 0.26 * (t);
-                    ctx.lineWidth = width + 4;
+                    ctx.globalAlpha = 0.20 * t; // slightly reduced
+                    ctx.lineWidth = width + 3;
                     ctx.beginPath();
                     ctx.moveTo(p0.x, p0.y);
                     ctx.lineTo(p1.x, p1.y);
                     ctx.stroke();
-                    // Core pass
-                    ctx.shadowBlur = 0;
-                    ctx.globalAlpha = 0.85 * (t);
+                }
+                // Core pass (no shadowBlur)
+                ctx.shadowBlur = 0;
+                for (let i = 0; i < n2 - 1; i += step2) {
+                    const p0 = gauntletRibbon[i];
+                    const p1 = gauntletRibbon[i + 1];
+                    if (!p1) break;
+                    if (Math.abs(p1.x - p0.x) > w2 * 0.5 || Math.abs(p1.y - p0.y) > h2 * 0.5) continue;
+                    if ((p0.x < -M2 && p1.x < -M2) || (p0.x > w2 + M2 && p1.x > w2 + M2) ||
+                        (p0.y < -M2 && p1.y < -M2) || (p0.y > h2 + M2 && p1.y > h2 + M2)) {
+                        continue;
+                    }
+                    const t = i / (n2 - 1);
+                    const width = 1.4 + t * 5.5;
+                    let r, g, b;
+                    if (t < 0.5) {
+                        const u = t * 2; r = 255; g = Math.round(215 + (255 - 215) * u); b = Math.round(0 + (255 - 0) * u);
+                    } else {
+                        const u = (t - 0.5) * 2; r = 255; g = Math.round(255 + (165 - 255) * u); b = Math.round(255 + (0 - 255) * u);
+                    }
+                    const color = `rgb(${r},${g},${b})`;
+                    ctx.strokeStyle = color;
+                    ctx.globalAlpha = 0.8 * t;
                     ctx.lineWidth = width;
                     ctx.beginPath();
                     ctx.moveTo(p0.x, p0.y);
