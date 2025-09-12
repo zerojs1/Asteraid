@@ -40,26 +40,45 @@ export class Powerup {
     this.type = type;
     this.radius = 15;
     this.pulse = 0;
+    // Slow drift in a random direction
+    const ang = Math.random() * Math.PI * 2;
+    const spd = 0.20 + Math.random() * 0.25; // very slow
+    this.vx = Math.cos(ang) * spd;
+    this.vy = Math.sin(ang) * spd;
+    this.dead = false; // mark for despawn when offscreen
 
     const config = {
       bomb: { color: '#ff0', icon: 'B' },
-      shield: { color: '#0f0', icon: 'O' },
+      shield: { color: '#0f0', icon: 'S' },
       teleport: { color: '#00f', icon: 'T' },
       flak: { color: '#f00', icon: 'F' },
       rainbow: { color: '#fa0', icon: 'R' },
       invisible: { color: '#f0f', icon: 'I' },
       laser: { color: '#f09', icon: 'L' },
       clone: { color: '#6ff', icon: 'C' },
+      orbital: { color: '#f5f5dc', icon: 'O' },
       life: { color: '#fff', icon: '1' },
-      armor: { color: '#0ff', icon: 'A' }
+      armor: { color: '#0ff', icon: 'A' },
+      // New: Durable Cannons (teal)
+      durable: { color: '#ed9079', icon: 'D' }
     };
 
     this.color = config[type].color;
     this.icon = config[type].icon;
   }
 
-  update() {
+  update(canvas) {
     this.pulse += 0.1;
+    // Apply slow drift
+    this.x += this.vx;
+    this.y += this.vy;
+    // Offscreen culling
+    if (canvas) {
+      const margin = 20;
+      if (this.x < -margin || this.x > canvas.width + margin || this.y < -margin || this.y > canvas.height + margin) {
+        this.dead = true;
+      }
+    }
   }
 
   draw(ctx) {

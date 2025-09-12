@@ -49,18 +49,30 @@ export class AlienMothershipBoss {
     this.invulnHitTimer = 0;
     this.invulnHitAngle = 0;
 
-    // Nodes arranged vertically in front (to the left) of the ship
-    this.nodeOffsetX = this.coreRadius + 80; // distance in front of mothership core
-    const offsetsY = [-120, -60, 0, 60, 120];
-    this.nodes = offsetsY.map(offY => ({
-      offY,
+    // Nodes arranged in a forward arc in front (to the left) of the ship
+    // Each node has a base polar angle around PI (left), a base radius, small radial/tangential wobble, and hit knockback
+    this.nodeOffsetX = this.coreRadius + 80; // legacy (not used for final placement)
+    const baseThetas = [-0.85, -0.45, 0, 0.45, 0.85]; // wider vertical spread relative to PI (left-facing)
+    this.nodes = baseThetas.map((bt) => ({
+      // Armor/state
       hits: 5,
       radius: 26,
       pulse: Math.random() * Math.PI * 2,
       hitFlash: 0,
       chargeTimer: 0,  // frames remaining while charging
       fireTimer: 0,    // frames remaining while laser is active
-      aimX: 0, aimY: 0 // captured player position at charge start
+      aimX: 0, aimY: 0, // captured player position at charge start
+      // Arc placement and wobble
+      baseTheta: bt,
+      offRadius: this.coreRadius + 120 + (Math.random() * 50 - 25),
+      radAmp: 12 + Math.random() * 12,
+      radFreq: 0.006 + Math.random() * 0.01,
+      radPhase: Math.random() * Math.PI * 2,
+      tanAmp: 0.08 + Math.random() * 0.08, // stronger angular wobble (radians)
+      tanFreq: 0.008 + Math.random() * 0.012,
+      tanPhase: Math.random() * Math.PI * 2,
+      // Hit knockback state
+      kx: 0, ky: 0, kvx: 0, kvy: 0,
     }));
 
     // Timers
@@ -84,6 +96,8 @@ export class AlienMothershipBoss {
     // Laser ember particles (pink) for node beams
     this.laserEmbers = [];
     this.laserEmberSprite = null;
+    // Micro-sway state (phase 1 only); adjust x without drift
+    this._lastSway = 0;
     this.initSprites();
   }
 
@@ -351,13 +365,19 @@ export class AlienMothershipBoss {
   isDefeated() { return this.defeated; }
 
   nodePositions() {
-    // Absolute positions for each node based on current boss position
-    return this.nodes.map(n => ({
-      x: this.x - this.nodeOffsetX,
-      y: this.y + n.offY,
-      radius: n.radius,
-      ref: n,
-    }));
+    // Place nodes in a forward arc (left of the core) with subtle wobble and knockback offset
+    const frame = (this.deps && typeof this.deps.getFrameCount === 'function') ? this.deps.getFrameCount() : 0;
+    // Visual sway does not affect collision; draw() translates scene for sway
+    const cx = this.x;
+    const cy = this.y;
+    const baseFacing = Math.PI; // leftward
+    return this.nodes.map(n => {
+      const rWob = (n.offRadius || (this.coreRadius + 90)) + Math.sin(frame * (n.radFreq || 0.008) + (n.radPhase || 0)) * (n.radAmp || 8);
+      const aWob = baseFacing + (n.baseTheta || 0) + Math.sin(frame * (n.tanFreq || 0.006) + (n.tanPhase || 0)) * (n.tanAmp || 0.05);
+      const px = cx + Math.cos(aWob) * rWob + (n.kx || 0);
+      const py = cy + Math.sin(aWob) * rWob + (n.ky || 0);
+      return { x: px, y: py, radius: n.radius, ref: n };
+    });
   }
 
   spawnIntroMines() {
@@ -383,6 +403,9 @@ export class AlienMothershipBoss {
       this.y += this.vy;
       if (this.y < this.yMin) { this.y = this.yMin; this.vy = Math.abs(this.vy); }
       if (this.y > this.yMax) { this.y = this.yMax; this.vy = -Math.abs(this.vy); }
+      // Subtle core micro-sway on X (visual only via draw translate)
+      const frame = (this.deps && typeof this.deps.getFrameCount === 'function') ? this.deps.getFrameCount() : 0;
+      this._lastSway = Math.sin(frame * 0.01) * 1.0;
     } else {
       // Phase 2: mobile avoidance with center bias and soft edge repulsion
       if (this.phase2Invuln > 0) this.phase2Invuln--;
@@ -442,6 +465,16 @@ export class AlienMothershipBoss {
     for (let n of this.nodes) {
       n.pulse += 0.1;
       if (n.hitFlash > 0) n.hitFlash--;
+      // Integrate knockback + damping
+      if (n.kvx || n.kvy || n.kx || n.ky) {
+        n.kx += n.kvx; n.ky += n.kvy;
+        n.kvx *= 0.88; n.kvy *= 0.88;
+        n.kx *= 0.94;  n.ky *= 0.94;
+        if (Math.abs(n.kx) < 0.01) n.kx = 0;
+        if (Math.abs(n.ky) < 0.01) n.ky = 0;
+        if (Math.abs(n.kvx) < 0.01) n.kvx = 0;
+        if (Math.abs(n.kvy) < 0.01) n.kvy = 0;
+      }
     }
 
     // Periodic core pushback pulse attack (every 5s)
@@ -604,8 +637,10 @@ export class AlienMothershipBoss {
     const t = getFrameCount ? getFrameCount() : 0;
     this.refreshIfDisplayChanged();
 
-    // Hull/core
+    // Hull/core (translate for micro-sway during phase 1)
     ctx.save();
+    const dxSway = this.phase2 ? 0 : (this._lastSway || 0);
+    ctx.translate(dxSway, 0);
     // Phase 2 red trail
     if (this.phase2 && this.trail && this.trail.length) {
       for (let i = 0; i < this.trail.length; i++) {
@@ -628,7 +663,7 @@ export class AlienMothershipBoss {
     if (!this.phase2 && this.hullBodySprite) {
       const dwb = this.hullBodySprite.width / this.dpr;
       const dhb = this.hullBodySprite.height / this.dpr;
-      ctx.drawImage(this.hullBodySprite, this.x - dwb / 2, this.y - dhb / 2, dwb, dhb);
+      ctx.drawImage(this.hullBodySprite, this.x - dwb / 2 + dxSway, this.y - dhb / 2, dwb, dhb);
     }
     // Outer hull glow rings (cached sprite)
     if (this.hullSprite) {
@@ -938,6 +973,13 @@ export class AlienMothershipBoss {
         const { getFrameCount } = this.deps;
         if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) return true; // consume bullet, no damage
         pos.ref.hits--; pos.ref.hitFlash = 8;
+        // Knockback impulse along impact normal (strong)
+        {
+          const d = Math.hypot(dx, dy) || 0.0001;
+          const nx = dx / d, ny = dy / d;
+          pos.ref.kvx = (pos.ref.kvx || 0) + nx * 0.85;
+          pos.ref.kvy = (pos.ref.kvy || 0) + ny * 0.85;
+        }
         if (pos.ref.hits > 0 && createExplosion) {
           createExplosion(pos.x, pos.y, 3, '#f66', 'micro');
         }
@@ -1022,6 +1064,13 @@ export class AlienMothershipBoss {
         const { getFrameCount } = this.deps;
         if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) { hit = true; break; }
         pos.ref.hits--; pos.ref.hitFlash = 8;
+        // Knockback impulse (medium)
+        {
+          const d = Math.hypot(dx, dy) || 0.0001;
+          const nx = dx / d, ny = dy / d;
+          pos.ref.kvx = (pos.ref.kvx || 0) + nx * 0.55;
+          pos.ref.kvy = (pos.ref.kvy || 0) + ny * 0.55;
+        }
         if (pos.ref.hits > 0 && createExplosion) {
           createExplosion(pos.x, pos.y, 3, '#f66', 'micro');
         }
@@ -1086,6 +1135,14 @@ export class AlienMothershipBoss {
         any = true;
         if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) { continue; }
         pos.ref.hits--; pos.ref.hitFlash = 8; any = true;
+        // Knockback outward from core (beam push)
+        {
+          const dx = pos.x - this.x, dy = pos.y - this.y;
+          const d = Math.hypot(dx, dy) || 0.0001;
+          const nx = dx / d, ny = dy / d;
+          pos.ref.kvx = (pos.ref.kvx || 0) + nx * 0.7;
+          pos.ref.kvy = (pos.ref.kvy || 0) + ny * 0.7;
+        }
         if (pos.ref.hits > 0 && createExplosion) {
           createExplosion(pos.x, pos.y, 3, '#f66', 'micro');
         }
@@ -1151,10 +1208,12 @@ export class AlienMothershipBoss {
 
   onDefeated() {
     if (this.defeated) return;
-    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints, unlockReward } = this.deps;
+    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints, unlockReward, applyShockwave } = this.deps;
     this.defeated = true;
-    createExplosion(this.x, this.y, this.coreRadius * 3, '#faa');
+    createExplosion(this.x, this.y, this.coreRadius * 3.6, '#faa');
     setShake && setShake(26, 9);
+    // Massive shockwave pushback on defeat
+    try { if (applyShockwave) applyShockwave(this.x, this.y, 520, 12); } catch (e) {}
     // Fixed award
     awardPoints && awardPoints(700, this.x, this.y, true);
     // Drop 2-3 powerups
@@ -1167,12 +1226,11 @@ export class AlienMothershipBoss {
         const dy = this.y + Math.sin(ang) * dist;
         const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
         const type = types[(Math.random() * types.length) | 0];
-        if (powerups.length < 4) powerups.push(new Powerup(dx, dy, type));
+        powerups.push(new Powerup(dx, dy, type));
       }
     }
-    if (Math.random() < 0.5 && this.deps.powerups && this.deps.Powerup && this.deps.powerups.length < 4) {
-      this.deps.powerups.push(new this.deps.Powerup(this.x, this.y, 'life'));
-    }
+    // Guaranteed +1 life drop regardless of field cap
+    try { if (this.deps.powerups && this.deps.Powerup) this.deps.powerups.push(new this.deps.Powerup(this.x, this.y, 'life')); } catch (e) {}
     // Clear boss projectiles and drones
     if (enemyBullets) enemyBullets.length = 0;
     if (drones) drones.length = 0;

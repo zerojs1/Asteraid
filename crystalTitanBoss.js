@@ -36,6 +36,19 @@ export class CrystalTitanBoss {
         radius: 38,
         pulse: Math.random() * Math.PI * 2,
         hitFlash: 0,
+        // Subtle orbital hover (visual + gameplay, affects positions)
+        radAmp: 6 + Math.random() * 8,
+        radFreq: 0.005 + Math.random() * 0.007,
+        radPhase: Math.random() * Math.PI * 2,
+        tanAmp: 0.0, // keep angular wobble minimal for consistent rings
+        // Excursions scheduling (outward slides)
+        excursionActive: false,
+        excursionStart: 0,
+        excursionDur: 0,
+        excursionDelta: 0,
+        nextExcursionAt: (getFrameCount ? getFrameCount() : 0) + 600 + Math.floor(Math.random() * 1200),
+        // Hit knockback state (visual + light collision effect)
+        kx: 0, ky: 0, kvx: 0, kvy: 0,
       });
     }
     // (frozen blade drawing happens in draw())
@@ -76,6 +89,10 @@ export class CrystalTitanBoss {
     this.bladeLength = 300;        // logical length of blade for collision and sprite
     this.bladeHalfWidth = 18;      // half-thickness used for collision and visuals
     this.bladeSprite = null;       // cached sprite for the blade body + glow
+    // Facet dust (optional, light) during excursions
+    this.facetDust = [];
+    this._facetDustPool = [];
+    this.facetDustCap = 80;
     // Player freeze state (self-contained if no external handler is provided)
     this.playerFrozenTimer = 0;    // frames remaining
     this.playerFrozenPos = { x: 0, y: 0 };
@@ -84,6 +101,8 @@ export class CrystalTitanBoss {
     this.invulnHitAngle = 0;
     // CrystalDrone spawn control
     this.droneSpawnCooldown = 180;   // start spawns 3s after boss appears, then every 3s
+    // Overlay pulse throttle to avoid stacking across multiple facets
+    this._lastOverlayPulseFrame = 0;
     this.initSprites();
     this._initFloaters();
   }
@@ -95,6 +114,7 @@ export class CrystalTitanBoss {
     this.buildSmallCrystalSprites();
     this.buildFacetBaseSprites();
     this.buildBladeSprite();
+    this.buildFacetDustSprite();
   }
 
   refreshIfDisplayChanged() {
@@ -115,6 +135,26 @@ export class CrystalTitanBoss {
 
     // Decay invulnerability hit ping timer
     if (this.invulnHitTimer > 0) this.invulnHitTimer--;
+  }
+
+  buildFacetDustSprite() {
+    const size = 10;
+    const c = this.createOffscreen(size, size);
+    if (!c) { this.facetDustSprite = null; return; }
+    const g = c.getContext('2d');
+    g.save();
+    g.scale(this.dpr, this.dpr);
+    const s = size;
+    const cx = s / 2, cy = s / 2, r = s * 0.45;
+    const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0.0, 'rgba(200,240,255,1)');
+    grad.addColorStop(0.5, 'rgba(200,240,255,0.45)');
+    grad.addColorStop(1.0, 'rgba(200,240,255,0)');
+    g.globalCompositeOperation = 'lighter';
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
+    g.restore();
+    this.facetDustSprite = c;
   }
 
   // Curved blade sprite (DPR-aware). Large canvas to keep it sharp.
@@ -530,11 +570,74 @@ export class CrystalTitanBoss {
   update() {
     const { player, enemyBullets, EnemyBullet, setShake, getFrameCount, lineCircleCollision, onPlayerHit } = this.deps;
     const frame = getFrameCount();
-    // Spin facets
+    // Spin facets + manage excursions
     for (let f of this.facets) {
       f.angle += this.rotateSpeed;
       f.pulse += 0.12;
       if (f.hitFlash > 0) f.hitFlash--;
+      // Knockback integration + damping
+      if (f.kvx || f.kvy || f.kx || f.ky) {
+        f.kx += f.kvx; f.ky += f.kvy;
+        f.kvx *= 0.88; f.kvy *= 0.88;
+        f.kx *= 0.94;  f.ky *= 0.94;
+        if (Math.abs(f.kx) < 0.01) f.kx = 0;
+        if (Math.abs(f.ky) < 0.01) f.ky = 0;
+        if (Math.abs(f.kvx) < 0.01) f.kvx = 0;
+        if (Math.abs(f.kvy) < 0.01) f.kvy = 0;
+      }
+      // Schedule outward excursion: smooth out-and-back using sin(pi*t)
+      if (!f.excursionActive && frame >= (f.nextExcursionAt || 0)) {
+        f.excursionActive = true;
+        f.excursionStart = frame;
+        f.excursionDur = 90 + Math.floor(Math.random() * 90); // 1.5..3s
+        f.excursionDelta = 50 + Math.floor(Math.random() * 150); // 50..200 px
+        // Overlay: mild bloom + small ripple at excursion start
+        try {
+          if (typeof window !== 'undefined' && window.glRenderer) {
+            if (!this._lastOverlayPulseFrame || (frame - this._lastOverlayPulseFrame) > 60) {
+              if (window.glRenderer.pulseExplosion) window.glRenderer.pulseExplosion(20, this.x, this.y);
+              if (window.glRenderer.pulseDistort) window.glRenderer.pulseDistort(0.25);
+              this._lastOverlayPulseFrame = frame;
+            }
+          }
+        } catch (e) {}
+      }
+      if (f.excursionActive) {
+        const t = (frame - f.excursionStart) / Math.max(1, f.excursionDur);
+        if (t >= 1) {
+          f.excursionActive = false;
+          f.excursionStart = 0;
+          f.excursionDur = 0;
+          f.excursionDelta = 0;
+          f.nextExcursionAt = frame + 600 + Math.floor(Math.random() * 1200); // 10..30s
+          // Overlay: subtle ripple at excursion end
+          try {
+            if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.pulseDistort) {
+              if (!this._lastOverlayPulseFrame || (frame - this._lastOverlayPulseFrame) > 60) {
+                window.glRenderer.pulseDistort(0.2);
+                this._lastOverlayPulseFrame = frame;
+              }
+            }
+          } catch (e) {}
+        } else {
+          // Emit light dust sparsely during excursion
+          if (Math.random() < 0.15 && this.facetDust.length < this.facetDustCap) {
+            const a = f.angle;
+            const baseR = this.orbitRadius;
+            const wob = Math.sin(frame * (f.radFreq || 0.008) + (f.radPhase || 0)) * (f.radAmp || 8);
+            const out = Math.sin(Math.PI * t) * (f.excursionDelta || 0);
+            const r = baseR + wob + out;
+            const sx = this.x + Math.cos(a) * r;
+            const sy = this.y + Math.sin(a) * r;
+            const d = this._facetDustPool.pop() || {};
+            const ang = Math.random() * Math.PI * 2;
+            const sp = 0.4 + Math.random() * 0.8;
+            d.x = sx; d.y = sy; d.vx = Math.cos(ang) * sp; d.vy = Math.sin(ang) * sp;
+            d.life = 28 + Math.floor(Math.random() * 22); d.maxLife = d.life; d.alpha = 1; d.size = 0.8 + Math.random() * 0.7;
+            this.facetDust.push(d);
+          }
+        }
+      }
     }
 
     // Radial shard bursts
@@ -944,13 +1047,16 @@ export class CrystalTitanBoss {
     }
 
     // Draw facets using cached base (ring + armor pips), then dynamic glow overlay
-    for (let f of this.facets) {
-      const fx = this.x + Math.cos(f.angle) * this.orbitRadius;
-      const fy = this.y + Math.sin(f.angle) * this.orbitRadius;
-      const baseSprite = this.facetBaseSprites[f.hits];
-      if (baseSprite) {
-        ctx.drawImage(baseSprite, fx - baseSprite.width / (2 * this.dpr), fy - baseSprite.height / (2 * this.dpr), baseSprite.width / this.dpr, baseSprite.height / this.dpr);
-      }
+    {
+      const positions = this.facetPositions();
+      for (let idx = 0; idx < positions.length; idx++) {
+        const pos = positions[idx];
+        const f = pos.ref;
+        const fx = pos.x, fy = pos.y;
+        const baseSprite = this.facetBaseSprites[f.hits];
+        if (baseSprite) {
+          ctx.drawImage(baseSprite, fx - baseSprite.width / (2 * this.dpr), fy - baseSprite.height / (2 * this.dpr), baseSprite.width / this.dpr, baseSprite.height / this.dpr);
+        }
       // Dynamic glow overlay (cheaper than full multi-pass redraw)
       const flash = f.hitFlash > 0 ? (f.hitFlash / 8) : 0;
       const glow = 14 + Math.sin(f.pulse) * 4 + flash * 8;
@@ -971,6 +1077,7 @@ export class CrystalTitanBoss {
       ctx.beginPath();
       ctx.arc(fx, fy, f.radius - 1.5, 0, Math.PI * 2);
       ctx.stroke();
+      }
     }
     // Frozen blades + trails
     if (this.blades && this.blades.length) {
@@ -1114,12 +1221,23 @@ export class CrystalTitanBoss {
   }
 
   facetPositions() {
-    return this.facets.map(f => ({
-      x: this.x + Math.cos(f.angle) * this.orbitRadius,
-      y: this.y + Math.sin(f.angle) * this.orbitRadius,
-      radius: f.radius,
-      ref: f,
-    }));
+    const frame = (this.deps && typeof this.deps.getFrameCount === 'function') ? this.deps.getFrameCount() : 0;
+    return this.facets.map(f => {
+      const wob = Math.sin(frame * (f.radFreq || 0.008) + (f.radPhase || 0)) * (f.radAmp || 8);
+      let out = 0;
+      if (f.excursionActive && f.excursionDur > 0) {
+        const t = Math.max(0, Math.min(1, (frame - (f.excursionStart || 0)) / f.excursionDur));
+        out = Math.sin(Math.PI * t) * (f.excursionDelta || 0);
+      }
+      const r = this.orbitRadius + wob + out;
+      const a = f.angle;
+      return {
+        x: this.x + Math.cos(a) * r + (f.kx || 0),
+        y: this.y + Math.sin(a) * r + (f.ky || 0),
+        radius: f.radius,
+        ref: f,
+      };
+    });
   }
 
   // Reflects bullet on facet hit; consumes bullet only when hitting core (facets destroyed)
@@ -1133,6 +1251,13 @@ export class CrystalTitanBoss {
         // Decrement facet armor but REFLECT the bullet instead of consuming
         pos.ref.hits--;
         pos.ref.hitFlash = 8;
+        // Apply knockback impulse to facet away from impact point
+        {
+          const nx = (dx / (dist || 0.0001));
+          const ny = (dy / (dist || 0.0001));
+          pos.ref.kvx = (pos.ref.kvx || 0) + nx * 0.9;
+          pos.ref.kvy = (pos.ref.kvy || 0) + ny * 0.9;
+        }
         if (pos.ref.hits > 0 && createExplosion) {
           createExplosion(pos.x, pos.y, 3, '#8ff', 'micro');
         }
@@ -1199,6 +1324,13 @@ export class CrystalTitanBoss {
       if (Math.hypot(dx, dy) < pos.radius + 12) {
         pos.ref.hits--;
         pos.ref.hitFlash = 8;
+        // Knockback impulse (lighter)
+        {
+          const d = Math.hypot(dx, dy) || 0.0001;
+          const nx = dx / d, ny = dy / d;
+          pos.ref.kvx = (pos.ref.kvx || 0) + nx * 0.6;
+          pos.ref.kvy = (pos.ref.kvy || 0) + ny * 0.6;
+        }
         if (pos.ref.hits > 0 && createExplosion) {
           createExplosion(pos.x, pos.y, 3, '#8ff', 'micro');
         }
@@ -1242,6 +1374,14 @@ export class CrystalTitanBoss {
       if (lineCircleCollision(x1, y1, x2, y2, pos.x, pos.y, pos.radius)) {
         pos.ref.hits--;
         pos.ref.hitFlash = 8;
+        // Knockback roughly outward from core side to simulate beam push
+        {
+          const dx = pos.x - this.x, dy = pos.y - this.y;
+          const d = Math.hypot(dx, dy) || 0.0001;
+          const nx = dx / d, ny = dy / d;
+          pos.ref.kvx = (pos.ref.kvx || 0) + nx * 0.8;
+          pos.ref.kvy = (pos.ref.kvy || 0) + ny * 0.8;
+        }
         any = true;
         if (pos.ref.hits > 0 && createExplosion) {
           createExplosion(pos.x, pos.y, 3, '#8ff', 'micro');
@@ -1277,31 +1417,47 @@ export class CrystalTitanBoss {
 
   onDefeated() {
     if (this.defeated) return;
-    const { createExplosion, powerups, Powerup, enemyBullets, setShake, awardPoints, addEXP, unlockReward } = this.deps;
+    const { createExplosion, powerups, Powerup, enemyBullets, setShake, awardPoints, addEXP, unlockReward, applyShockwave } = this.deps;
     this.defeated = true;
-    createExplosion(this.x, this.y, this.coreRadius * 3, '#f9f');
+    // Overlay: stronger ripple on defeat
+    try {
+      if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.pulseDistort) {
+        window.glRenderer.pulseDistort(0.7);
+      }
+    } catch (e) {}
+    // Extra chromatic rings
+    try {
+      if (typeof window !== 'undefined' && window.glRenderer) {
+        const gl = window.glRenderer;
+        if (gl.spawnChromaticRing) {
+          gl.spawnChromaticRing(this.x, this.y, 60, 3, 1.03, 0.94, 3);
+          gl.spawnChromaticRing(this.x, this.y, 120, 3, 1.02, 0.94, 4);
+        }
+        if (gl.pulseExplosion) gl.pulseExplosion(1.0, this.x, this.y);
+      }
+    } catch (e) {}
+    createExplosion(this.x, this.y, this.coreRadius * 3.6, '#f9f');
     setShake && setShake(24, 8);
+    // Massive shockwave pushback on defeat
+    try { if (applyShockwave) applyShockwave(this.x, this.y, 500, 12); } catch (e) {}
     // Award fixed points for defeating the boss core
     awardPoints(600, this.x, this.y, true);
-    // Drop 2-3 powerups capped at 4 active max
-    const drops = 2 + Math.floor(Math.random() * 2);
-    for (let i = 0; i < drops; i++) {
+    // EXP for boss defeat
+    if (typeof addEXP === 'function') addEXP(120, 'boss');
+    // Unlock cosmetic trail on first defeat
+    try { if (typeof unlockReward === 'function') unlockReward('trail_crystaltitan'); } catch (e) {}
+    for (let i = 0; i < 2; i++) {
       const ang = Math.random() * Math.PI * 2;
       const dist = 40 + Math.random() * 60;
       const dx = this.x + Math.cos(ang) * dist;
       const dy = this.y + Math.sin(ang) * dist;
       const type = this.pickPowerupType();
-      if (powerups.length < 4) powerups.push(new Powerup(dx, dy, type));
+      if (powerups && Powerup) powerups.push(new Powerup(dx, dy, type));
     }
-    if (Math.random() < 0.5 && powerups.length < 4) {
-      powerups.push(new Powerup(this.x, this.y, 'life'));
-    }
+    // Guaranteed +1 life drop regardless of field cap
+    if (powerups && Powerup) powerups.push(new Powerup(this.x, this.y, 'life'));
     // Clear boss bullets on defeat
     enemyBullets.length = 0;
-    // EXP: Award 200 EXP for defeating Crystal Titan boss
-    if (typeof addEXP === 'function') addEXP(200, 'boss-crystaltitan');
-    // Unlock cosmetic trail on first defeat
-    try { if (typeof unlockReward === 'function') unlockReward('trail_crystaltitan'); } catch (e) {}
   }
 
   pickPowerupType() {

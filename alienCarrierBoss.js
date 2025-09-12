@@ -317,8 +317,8 @@ export class AlienCarrierBoss {
   }
 
   pickPowerupType() {
-    const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
-    const weights = [20, 30, 20, 20, 15, 10, 10, 10];
+    const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'durable'];
+    const weights = [20, 30, 20, 20, 15, 10, 10, 10, 10];
     const total = weights.reduce((a, b) => a + b, 0);
     let r = Math.random() * total;
     for (let i = 0; i < types.length; i++) {

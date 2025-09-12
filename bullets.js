@@ -261,6 +261,40 @@ export class Bullet {
       ctx.translate(this.x, this.y);
       ctx.rotate(angle);
       ctx.drawImage(sprite.img, -sprite.ax, -sprite.ay);
+      // Durable Cannons overlay (style-only). Applied to bullets tagged by caller.
+      if (this.durableFx) {
+        ctx.save();
+        // Slight colored tail first (using bullet color)
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = this.color;
+        ctx.globalAlpha = 0.45;
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur = 14;
+        ctx.lineWidth = Math.max(1.2, this.radius * 0.8);
+        ctx.beginPath();
+        ctx.moveTo(-Math.max(16, this.radius * 3.0), 0);
+        ctx.lineTo(-Math.max(4, this.radius * 1.0), 0);
+        ctx.stroke();
+        // White punchy inner streak for readability
+        ctx.strokeStyle = '#ffffff';
+        ctx.globalAlpha = 0.8;
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 20;
+        ctx.lineWidth = Math.max(1.8, this.radius * 1.1);
+        ctx.beginPath();
+        ctx.moveTo(-Math.max(22, this.radius * 3.6), 0);
+        ctx.lineTo(-Math.max(5, this.radius * 1.3), 0);
+        ctx.stroke();
+        // Soft outer halo
+        ctx.globalAlpha = 0.5;
+        ctx.shadowBlur = 18;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = Math.max(1.0, this.radius * 0.55);
+        ctx.beginPath();
+        ctx.arc(0, 0, Math.max(3.0, this.radius * 1.15), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
       // Apex Rounds boosted overlay (only while bullet can pierce)
       if (typeof window !== 'undefined' && window.__apexRoundsEnabled && this.piercesLeft > 0) {
         ctx.save();
@@ -406,6 +440,38 @@ export class Bullet {
       ctx.beginPath(); ctx.moveTo(-len, 0); ctx.lineTo(0, 0); ctx.stroke();
       ctx.fillStyle = this.color; ctx.shadowBlur = coreBlur;
       ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
+    }
+    // Durable Cannons overlay (style-only). Applied to bullets tagged by caller.
+    if (this.durableFx) {
+      // colored tail
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = this.color;
+      ctx.globalAlpha = 0.45;
+      ctx.shadowColor = this.color;
+      ctx.shadowBlur = 14;
+      ctx.lineWidth = Math.max(1.2, this.radius * 0.8);
+      ctx.beginPath();
+      ctx.moveTo(-Math.max(16, len * 1.1), 0);
+      ctx.lineTo(-Math.max(4, len * 0.2), 0);
+      ctx.stroke();
+      // white inner streak
+      ctx.strokeStyle = '#ffffff';
+      ctx.globalAlpha = 0.8;
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur = 20;
+      ctx.lineWidth = Math.max(1.8, this.radius * 1.1);
+      ctx.beginPath();
+      ctx.moveTo(-Math.max(22, len * 1.5), 0);
+      ctx.lineTo(-Math.max(6, len * 0.35), 0);
+      ctx.stroke();
+      // soft halo
+      ctx.globalAlpha = 0.5;
+      ctx.shadowBlur = 18;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(1.0, this.radius * 0.55);
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.max(3.0, this.radius * 1.15), 0, Math.PI * 2);
+      ctx.stroke();
     }
     // Apex Rounds boosted overlay (only while bullet can pierce)
     if (typeof window !== 'undefined' && window.__apexRoundsEnabled && this.piercesLeft > 0) {

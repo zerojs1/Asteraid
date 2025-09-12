@@ -94,3 +94,9 @@ export const TETHER_RESPAWN_FRAMES = 540;     // ~9s @60fps before pair respawns
 // Player Shield power-up: charged-shot detonation shockwave
 export const SHIELD_SHOCKWAVE_RADIUS = 160;   // knockback radius when shield explodes on charged attack
 export const SHIELD_SHOCKWAVE_STRENGTH = 10;  // push strength applied to nearby objects
+
+// Black Hole hazard (Level 13)
+// Size is roughly twice a large asteroid (large = 80 radius in asteroid.js)
+export const BLACK_HOLE_RADIUS = 160;
+// Relocates every 5 seconds
+export const BLACK_HOLE_RELOCATE_FRAMES = 400;

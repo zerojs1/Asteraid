@@ -63,7 +63,7 @@ export function applyGravityTo(obj, gravityWells, softening, factor = 1) {
 export function createExplosion(x, y, radius, color, profile = 'default', ParticleClass, particles) {
   // 'micro' profile: ultra-lightweight pop for hit feedback
   if (profile === 'micro') {
-    const count = 6; // very few particles
+    const count = 8; // slightly richer micro-pop
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * Math.PI * 2;
       const speed = 2 + Math.random() * 2;
@@ -75,7 +75,8 @@ export function createExplosion(x, y, radius, color, profile = 'default', Partic
         color,
         18
       );
-      p.glow = 6;
+      p.glow = 12;
+      p.radius *= 1.12;
       particles.push(p);
     }
     // Single tiny ring (reduced another 50% in size)
@@ -84,12 +85,12 @@ export function createExplosion(x, y, radius, color, profile = 'default', Partic
     ring.radius = Math.max(1, radius * 0.1);
     ring.growth = Math.max(0.3, radius * 0.02);
     ring.thickness = 1;
-    ring.glow = 8;
+    ring.glow = 14;
     particles.push(ring);
     return;
   }
 
-  const count = profile === 'burst' ? 140 : 100;
+  const count = profile === 'burst' ? 160 : 120; // modestly increase particle density
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
     const speed = (Math.random() * 5 + 2) * (profile === 'burst' ? 1.2 : 1);
@@ -101,6 +102,9 @@ export function createExplosion(x, y, radius, color, profile = 'default', Partic
       color,
       40
     );
+    // Brighten dots
+    p.glow = 22;
+    p.radius *= 1.15;
     particles.push(p);
   }
   // Shock ring
@@ -108,24 +112,24 @@ export function createExplosion(x, y, radius, color, profile = 'default', Partic
   ring.shape = 'ring';
   ring.radius = Math.max(6, radius * 0.25);
   ring.growth = Math.max(3, radius * 0.06);
-  ring.thickness = 2.5;
-  ring.glow = 18;
+  ring.thickness = 3.0;
+  ring.glow = 24;
   particles.push(ring);
   // Echo shimmer rings
   const ringEcho1 = new ParticleClass(x, y, 0, 0, color, 12);
   ringEcho1.shape = 'ring';
   ringEcho1.radius = Math.max(4, radius * 0.15);
   ringEcho1.growth = Math.max(2, radius * 0.05);
-  ringEcho1.thickness = 1.5;
-  ringEcho1.glow = 12;
+  ringEcho1.thickness = 1.8;
+  ringEcho1.glow = 18;
   particles.push(ringEcho1);
 
   const ringEcho2 = new ParticleClass(x, y, 0, 0, color, 16);
   ringEcho2.shape = 'ring';
   ringEcho2.radius = Math.max(8, radius * 0.35);
   ringEcho2.growth = Math.max(2, radius * 0.04);
-  ringEcho2.thickness = 1.2;
-  ringEcho2.glow = 10;
+  ringEcho2.thickness = 1.6;
+  ringEcho2.glow = 16;
   particles.push(ringEcho2);
   // Bright shards
   const shards = profile === 'burst' ? 14 : 8;
@@ -134,7 +138,9 @@ export function createExplosion(x, y, radius, color, profile = 'default', Partic
     const sp = 4 + Math.random() * 4;
     const sh = new ParticleClass(x, y, Math.cos(a) * sp, Math.sin(a) * sp, color, 30);
     sh.shape = 'shard';
-    sh.length = 8 + Math.random() * 10;
+    sh.length = 10 + Math.random() * 12;
+    sh.glow = 18;
+    sh.thickness = 2.2;
     particles.push(sh);
   }
 }
@@ -183,6 +189,8 @@ export function awardPoints(basePoints, x, y, state, constants, deps) {
     currentComboBonusTotal += bonus;
     if (isMax) {
       maxComboBonusTotal = Math.max(maxComboBonusTotal, currentComboBonusTotal);
+      // Notify host for special max-combo celebration (HUD + overlay)
+      try { if (deps && typeof deps.onMaxCombo === 'function') deps.onMaxCombo(currentComboBonusTotal); } catch (e) {}
       comboActive = false;
       currentComboBonusTotal = 0;
       comboBonusPercent = 0;

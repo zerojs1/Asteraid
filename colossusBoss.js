@@ -67,6 +67,29 @@ export class ColossusBoss {
         shardOrient,
         shardSlim,
         shardHitTimer: 0, // frames of pulse/glow after getting hit
+        // Orbital wobble params (visual-only) — stronger to make plates float more
+        radAmp: 12 + Math.random() * 18,           // radial wobble amplitude (px)
+        radFreq: 0.0045 + Math.random() * 0.008,   // per-frame frequency
+        radPhase: Math.random() * Math.PI * 2,
+        tanAmp: 10 + Math.random() * 12,           // tangential wobble (px equivalent)
+        tanFreq: 0.0035 + Math.random() * 0.008,
+        tanPhase: Math.random() * Math.PI * 2,
+        orientBase: shardOrient,
+        orientWobbleAmp: 0.06 + Math.random() * 0.06,
+        orientWobbleFreq: 0.008 + Math.random() * 0.008,
+        // Inner rock slow rotation
+        rockSpin: Math.random() * Math.PI * 2,
+        rockSpinSpeed: 0.003 + Math.random() * 0.007,
+        // Excursion attack state
+        excActive: false,
+        excPhase: 'idle', // 'out' | 'burst' | 'return'
+        excT: 0,          // 0..1 within phase
+        excDur: 0,        // frames for current phase
+        excX: 0, excY: 0, // current visual offset applied to draw position
+        excTX: 0, excTY: 0, // target offset for the phase (px)
+        excDirX: 0, excDirY: 0, // cached unit direction from core at launch
+        // Hit knockback state (visual)
+        kx: 0, ky: 0, kvx: 0, kvy: 0,
       });
     }
     this.defeated = false;
@@ -98,6 +121,10 @@ export class ColossusBoss {
     // Shockwave trail and core ember system
     this.pulseTrail = []; // array of {r, alpha}
     this.coreEmbers = [];
+    // Plate debris (small dust from shards)
+    this.plateDebris = [];
+    this._plateDebrisPool = [];
+    this.plateDebrisCap = 120;
     this.sparkSprite = null; // cached white spark sprite
     // Core vulnerable shard-burst attack state
     this.coreVulnerable = false; // becomes true when plates cleared
@@ -105,6 +132,12 @@ export class ColossusBoss {
     // Death FX state (for core defeat)
     this.deathFx = null; // { startFrame, growDur, fadeDur, shockRings: Array<number> }
     this.shockwaveSprite = null; // cached red ring sprite for scalable shockwave
+
+    // Scheduled plate excursion attack
+    this.plateExcursionCooldown = 240; // every ~4s one plate dashes out
+    this.plateShockwaves = []; // {x,y, age, life, maxRadius}
+    // Core pre-attack glow (red) timer (frames); shown shortly before a plate dashes
+    this.corePreAttackGlowTimer = 0; // 0..90 (1.5s)
   }
 
   // --- Sprite pre-render helpers ---
@@ -112,6 +145,7 @@ export class ColossusBoss {
     this.buildCoreGlowSprites();
     this.buildPlateBaseSprites();
     this.buildShockwaveSprite();
+    this.buildPlateDebrisSprite();
   }
 
   refreshIfDisplayChanged() {
@@ -246,22 +280,141 @@ export class ColossusBoss {
     this.shockwaveSprite = c;
   }
 
+  buildPlateDebrisSprite() {
+    // Small orange spark used for shard debris
+    const size = Math.ceil(10 * this.dpr);
+    const c = this.createOffscreen(size, size);
+    if (!c) { this.plateDebrisSprite = null; return; }
+    const g = c.getContext('2d');
+    g.save();
+    g.scale(this.dpr, this.dpr);
+    const s = size / this.dpr;
+    const cx = s / 2, cy = s / 2, r = s * 0.42;
+    const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0.0, 'rgba(255,170,60,1)');
+    grad.addColorStop(0.5, 'rgba(255,170,60,0.45)');
+    grad.addColorStop(1.0, 'rgba(255,170,60,0)');
+    g.globalCompositeOperation = 'lighter';
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
+    g.restore();
+    this.plateDebrisSprite = c;
+  }
+
   update() {
     const { player, bullets, enemyBullets, EnemyBullet, setShake, onPlayerHit, SHARD_MINION_CAP } = this.deps;
     const { canvas } = this.deps;
-    // Spin plates and update trails
+    // Spin plates and update trails (apply subtle visual wobble for trails)
+    const frame = (this.deps && typeof this.deps.getFrameCount === 'function') ? this.deps.getFrameCount() : 0;
     for (let p of this.plates) {
       p.angle += this.rotateSpeed;
       p.pulse += 0.12;
-      // Record world position for trail
-      const px = this.x + Math.cos(p.angle) * this.orbitRadius;
-      const py = this.y + Math.sin(p.angle) * this.orbitRadius;
-      p.trail.push({ x: px, y: py });
-      if (p.trail.length > 24) p.trail.shift(); // keep longer trail (tripled)
+      // Advance slow inner-rock rotation
+      if (typeof p.rockSpin === 'number' && typeof p.rockSpinSpeed === 'number') {
+        p.rockSpin += p.rockSpinSpeed;
+      }
+      const rWob = this.orbitRadius + Math.sin(frame * (p.radFreq || 0.006) + (p.radPhase || 0)) * (p.radAmp || 8);
+      const aWob = p.angle + Math.sin(frame * (p.tanFreq || 0.004) + (p.tanPhase || 0)) * ((p.tanAmp || 6) / Math.max(1, rWob));
+      // Handle excursion attack per-plate
+      if (p.excActive) {
+        p.excT += 1 / Math.max(1, p.excDur || 1);
+        const t = Math.min(1, p.excT);
+        if (p.excPhase === 'out') {
+          // Ease out quickly
+          const ease = t < 1 ? (1 - Math.pow(1 - t, 3)) : 1;
+          p.excX = p.excDirX * p.excTX * ease;
+          p.excY = p.excDirY * p.excTY * ease;
+          if (t >= 1) {
+            // Trigger shockwave burst at the shard's actual world position
+            const fNow = (this.deps && typeof this.deps.getFrameCount === 'function') ? this.deps.getFrameCount() : 0;
+            const rNow = this.orbitRadius + Math.sin(fNow * (p.radFreq || 0.006) + (p.radPhase || 0)) * (p.radAmp || 8);
+            const aNow = p.angle + Math.sin(fNow * (p.tanFreq || 0.004) + (p.tanPhase || 0)) * ((p.tanAmp || 6) / Math.max(1, rNow));
+            const cx = this.x + Math.cos(aNow) * rNow + (p.kx || 0) + (p.excX || 0);
+            const cy = this.y + Math.sin(aNow) * rNow + (p.ky || 0) + (p.excY || 0);
+            this.plateShockwaves.push({ x: cx, y: cy, age: 0, life: 30, maxRadius: 280 });
+            // Small shake and optional overlay pulse
+            try {
+              if (this.deps.setShake) this.deps.setShake(8, 3);
+              if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.pulseDistort) {
+                window.glRenderer.pulseDistort(0.35);
+              }
+            } catch (e) {}
+            // Move to return phase
+            p.excPhase = 'return';
+            p.excT = 0;
+            p.excDur = 30; // return duration
+          }
+        } else if (p.excPhase === 'return') {
+          // Ease back to orbit
+          const ease = 1 - (1 - t) * (1 - t);
+          p.excX = p.excDirX * p.excTX * (1 - ease);
+          p.excY = p.excDirY * p.excTY * (1 - ease);
+          if (t >= 1) {
+            p.excX = 0; p.excY = 0; p.excActive = false; p.excPhase = 'idle';
+          }
+        }
+      } else {
+        p.excX = 0; p.excY = 0; // ensure reset
+      }
+      // Knockback integration + damping
+      if (p.kvx || p.kvy || p.kx || p.ky) {
+        p.kx += p.kvx; p.ky += p.kvy;
+        p.kvx *= 0.88; p.kvy *= 0.88;
+        p.kx *= 0.94;  p.ky *= 0.94;
+        if (Math.abs(p.kx) < 0.01) p.kx = 0;
+        if (Math.abs(p.ky) < 0.01) p.ky = 0;
+        if (Math.abs(p.kvx) < 0.01) p.kvx = 0;
+        if (Math.abs(p.kvy) < 0.01) p.kvy = 0;
+      }
+      const px = this.x + Math.cos(aWob) * rWob + (p.kx || 0) + (p.excX || 0);
+      const py = this.y + Math.sin(aWob) * rWob + (p.ky || 0) + (p.excY || 0);
+      // Snap to half-pixel to keep sprite and stroke centers aligned on all DPRs
+      const spx = Math.round(px) + 0.5;
+      const spy = Math.round(py) + 0.5;
+      p.trail.push({ x: spx, y: spy });
+      if (p.trail.length > 24) p.trail.shift();
       if (p.shardHitTimer > 0) p.shardHitTimer--;
+      // Debris emission: small chance, higher when just hit
+      const emitChance = (p.shardHitTimer > 0) ? 0.25 : 0.06;
+      if (Math.random() < emitChance && this.plateDebris.length < this.plateDebrisCap) {
+        const ang = Math.random() * Math.PI * 2;
+        const sp = 0.5 + Math.random() * 1.5;
+        const life = 30 + Math.floor(Math.random() * 25);
+        const d = this._plateDebrisPool.pop() || {};
+        d.x = px; d.y = py; d.vx = Math.cos(ang) * sp; d.vy = Math.sin(ang) * sp;
+        d.life = life; d.maxLife = life; d.alpha = 1; d.size = 1 + Math.random() * 1.5;
+        this.plateDebris.push(d);
+      }
     }
     // Tick invulnerable-core hit timer
     if (this.coreInvulnHitTimer > 0) this.coreInvulnHitTimer--;
+    if (this.corePreAttackGlowTimer > 0) this.corePreAttackGlowTimer--;
+
+    // Schedule plate excursion every ~4s if any plates present and none currently moving
+    if (this.plates.length > 0) {
+      if (this.plateExcursionCooldown > 0) this.plateExcursionCooldown--;
+      const anyActive = this.plates.some(pp => pp.excActive);
+      // 1s before the excursion triggers, start a red core glow for 1.5s
+      if (!anyActive && this.plateExcursionCooldown === 60) {
+        this.corePreAttackGlowTimer = 90; // 1.5 seconds
+      }
+      if (!anyActive && this.plateExcursionCooldown === 0) {
+        const candidates = this.plates.filter(pp => pp.hits > 0);
+        if (candidates.length) {
+          const p = candidates[(Math.random() * candidates.length) | 0];
+          // Launch direction: current radial from core
+          const rWob = this.orbitRadius; // use base to avoid jitter
+          const a = p.angle;
+          const dirX = Math.cos(a), dirY = Math.sin(a);
+          p.excDirX = dirX; p.excDirY = dirY;
+          p.excTX = 200; p.excTY = 200; // scalar distance; applied via dir (reduced)
+          p.excActive = true; p.excPhase = 'out'; p.excT = 0; p.excDur = 22; // quick dash out ~0.36s
+        }
+        this.plateExcursionCooldown = 240;
+      }
+    } else {
+      this.plateExcursionCooldown = Math.max(this.plateExcursionCooldown, 60);
+    }
 
     // Rotating slam: telegraph then strike
     if (this.slamActiveTimer > 0) {
@@ -284,6 +437,12 @@ export class ColossusBoss {
         // Activate slam for a short burst
         this.slamActiveTimer = 24;
         setShake(10, 4);
+        // Overlay: subtle heat-haze ripple on slam activation
+        try {
+          if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.pulseDistort) {
+            window.glRenderer.pulseDistort(0.35);
+          }
+        } catch (e) {}
       }
     } else {
       // Cooldown
@@ -330,6 +489,54 @@ export class ColossusBoss {
         this.pulseProgress = 0;
         this.pulseCooldown = 260;
         setShake(8, 3);
+      }
+    }
+
+    // Update plate shockwaves: expand and apply pushback
+    if (this.plateShockwaves.length) {
+      const { player, bullets } = this.deps;
+      for (let i = this.plateShockwaves.length - 1; i >= 0; i--) {
+        const w = this.plateShockwaves[i];
+        w.age++;
+        if (w.age >= w.life) { this.plateShockwaves.splice(i, 1); continue; }
+        const prog = w.age / w.life;
+        const radius = Math.max(0, prog * w.maxRadius);
+        // Push player lightly
+        const dx = player.x - w.x, dy = player.y - w.y;
+        const dist = Math.hypot(dx, dy) || 0.0001;
+        if (dist < radius + (player.radius || 10)) {
+          const nx = dx / dist, ny = dy / dist;
+          player.vx += nx * 0.9;
+          player.vy += ny * 0.9;
+        }
+        // Deflect bullets intersecting wavefront
+        bullets.forEach(b => {
+          const bx = b.x - w.x, by = b.y - w.y;
+          const bd = Math.hypot(bx, by) || 0.0001;
+          if (bd < radius + 10 && bd > radius - 14) {
+            const nx = bx / bd, ny = by / bd;
+            const dot = b.vx * nx + b.vy * ny;
+            b.vx = b.vx - 2 * dot * nx;
+            b.vy = b.vy - 2 * dot * ny;
+          }
+        });
+      }
+    }
+
+    // Update plate debris
+    if (this.plateDebris && this.plateDebris.length) {
+      const { canvas } = this.deps || {};
+      const margin = 40;
+      for (let i = this.plateDebris.length - 1; i >= 0; i--) {
+        const d = this.plateDebris[i];
+        d.x += d.vx; d.y += d.vy;
+        d.vx *= 0.986; d.vy *= 0.986;
+        d.life--; d.alpha *= 0.97;
+        const off = !canvas ? false : (d.x < -margin || d.y < -margin || d.x > canvas.width + margin || d.y > canvas.height + margin);
+        if (d.life <= 0 || d.alpha <= 0.03 || off) {
+          this.plateDebris.splice(i, 1);
+          this._plateDebrisPool.push(d);
+        }
       }
     }
 
@@ -424,6 +631,27 @@ export class ColossusBoss {
     ctx.fill();
     ctx.shadowBlur = 0;
     ctx.globalAlpha = 1;
+    // Red pre-attack core glow overlay (fades over 1.5s)
+    if (this.corePreAttackGlowTimer > 0) {
+      const t = this.corePreAttackGlowTimer / 90; // 1..0
+      ctx.save();
+      ctx.globalAlpha = 0.2 + 0.6 * t;
+      ctx.shadowColor = '#f33';
+      ctx.shadowBlur = 20 + 30 * t;
+      ctx.strokeStyle = '#f55';
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.coreRadius + 10, 0, Math.PI * 2);
+      ctx.stroke();
+      // inner hot pulse
+      ctx.globalAlpha = 0.15 + 0.35 * t;
+      ctx.shadowBlur = 18 + 22 * t;
+      ctx.fillStyle = 'rgba(255,50,50,0.8)';
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.max(10, this.coreRadius * 0.4), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
     // Invulnerable-core hit indicator: brief cyan shield ring + X
     if (this.plates.length > 0 && this.coreInvulnHitTimer > 0) {
       const t = this.coreInvulnHitTimer / 12; // 0..1
@@ -447,6 +675,29 @@ export class ColossusBoss {
       ctx.stroke();
       ctx.restore();
     }
+    // Plate excursion shockwave visuals (additive rings)
+    if (this.plateShockwaves.length) {
+      ctx.save();
+      // Draw in absolute screen space to avoid any prior translate/scale affecting positions
+      if (typeof ctx.setTransform === 'function') ctx.setTransform(1, 0, 0, 1, 0, 0);
+      const prevOp2 = ctx.globalCompositeOperation;
+      ctx.globalCompositeOperation = 'lighter';
+      for (const w of this.plateShockwaves) {
+        const prog = w.age / w.life;
+        const r = Math.max(0, prog * w.maxRadius);
+        const alpha = Math.max(0, 0.65 * (1 - prog));
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = '#ff6666';
+        ctx.shadowColor = '#ff3333';
+        ctx.shadowBlur = 14 * (1 - prog);
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(w.x, w.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = prevOp2;
+      ctx.restore();
+    }
     // Removed core health pips (request)
     ctx.restore();
 
@@ -464,10 +715,14 @@ export class ColossusBoss {
       ctx.globalCompositeOperation = prevOp;
     }
 
-    // Draw plates
-    for (let p of this.plates) {
-      const px = this.x + Math.cos(p.angle) * this.orbitRadius;
-      const py = this.y + Math.sin(p.angle) * this.orbitRadius;
+    // Draw plates using the same wobble position as update() plus knockback and excursion offsets
+    for (let idx = 0; idx < this.plates.length; idx++) {
+      const p = this.plates[idx];
+      const frame = (this.deps && typeof this.deps.getFrameCount === 'function') ? this.deps.getFrameCount() : 0;
+      const rWob = this.orbitRadius + Math.sin(frame * (p.radFreq || 0.006) + (p.radPhase || 0)) * (p.radAmp || 8);
+      const aWob = p.angle + Math.sin(frame * (p.tanFreq || 0.004) + (p.tanPhase || 0)) * ((p.tanAmp || 6) / Math.max(1, rWob));
+      const px = this.x + Math.cos(aWob) * rWob + (p.kx || 0) + (p.excX || 0);
+      const py = this.y + Math.sin(aWob) * rWob + (p.ky || 0) + (p.excY || 0);
       // Trail: fading outer red ring copies along the recent path
       if (p.trail && p.trail.length >= 1) {
         ctx.save();
@@ -496,7 +751,10 @@ export class ColossusBoss {
       // Orange asteroid shard inside the plate
       ctx.save();
       ctx.translate(px, py);
-      ctx.rotate(p.shardOrient);
+      const orient = (p.orientBase || p.shardOrient || 0)
+        + Math.sin(frame * (p.orientWobbleFreq || 0.01)) * (p.orientWobbleAmp || 0.1)
+        + (p.rockSpin || 0);
+      ctx.rotate(orient);
       // Slim profile via non-uniform scale on X
       ctx.scale(p.shardSlim, 1);
       const hitT = Math.max(0, Math.min(1, p.shardHitTimer / 14));
@@ -714,8 +972,8 @@ export class ColossusBoss {
 
   platePositions() {
     return this.plates.map(p => ({
-      x: this.x + Math.cos(p.angle) * this.orbitRadius,
-      y: this.y + Math.sin(p.angle) * this.orbitRadius,
+      x: this.x + Math.cos(p.angle) * this.orbitRadius + (p.excX || 0),
+      y: this.y + Math.sin(p.angle) * this.orbitRadius + (p.excY || 0),
       radius: p.radius,
       ref: p,
     }));
@@ -735,9 +993,16 @@ export class ColossusBoss {
           return true; // consume bullet, no damage
         }
         pos.ref.hits--;
-        // Micro hit effect for surviving plate
+        // Apply knockback impulse to plate away from impact point
+        {
+          const nx = (dx / (Math.hypot(dx, dy) || 0.0001));
+          const ny = (dy / (Math.hypot(dx, dy) || 0.0001));
+          pos.ref.kvx = (pos.ref.kvx || 0) + nx * 0.9;
+          pos.ref.kvy = (pos.ref.kvy || 0) + ny * 0.9;
+        }
+        // Visible orange explosion for surviving plate
         if (pos.ref.hits > 0 && createExplosion) {
-          createExplosion(pos.x, pos.y, 3, '#f00', 'micro');
+          createExplosion(pos.x, pos.y, 36, '#f90');
           if (typeof pos.ref.shardHitTimer === 'number') pos.ref.shardHitTimer = 14;
         }
         if (pos.ref.hits <= 0) {
@@ -839,21 +1104,18 @@ export class ColossusBoss {
         // Spawn invulnerability for plates: ignore damage for first 1.5s
         const { getFrameCount } = this.deps;
         if (getFrameCount && (getFrameCount() - this.spawnTime) < 90) {
-          // Pulse shard even when invulnerable
-          if (pos.ref && typeof pos.ref.shardHitTimer === 'number') pos.ref.shardHitTimer = 14;
-          any = true; continue;
+          return false;
         }
         pos.ref.hits--;
-        any = true;
-        if (pos.ref.hits > 0 && createExplosion) {
-          createExplosion(pos.x, pos.y, 3, '#f00', 'micro');
-          if (typeof pos.ref.shardHitTimer === 'number') pos.ref.shardHitTimer = 14;
+        // Knockback outward from core direction as proxy for laser sweep
+        {
+          const nx = (pos.x - this.x) / (Math.hypot(pos.x - this.x, pos.y - this.y) || 0.0001);
+          const ny = (pos.y - this.y) / (Math.hypot(pos.x - this.x, pos.y - this.y) || 0.0001);
+          pos.ref.kvx = (pos.ref.kvx || 0) + nx * 0.8;
+          pos.ref.kvy = (pos.ref.kvy || 0) + ny * 0.8;
         }
-        if (pos.ref.hits <= 0) {
-          createExplosion(pos.x, pos.y, 80, '#f00');
-          this.maybeDropPowerup(pos.x, pos.y, 0.25);
-          this.growOnPlateDestroyed();
-          this.plates = this.plates.filter(pp => pp !== pos.ref);
+        if (pos.ref.hits > 0 && createExplosion) {
+          createExplosion(pos.x, pos.y, 36, '#f90');
         }
       }
     }
@@ -928,8 +1190,25 @@ export class ColossusBoss {
 
   onDefeated() {
     if (this.defeated) return;
-    const { createExplosion, powerups, Powerup, asteroids, enemyBullets, setShake, awardPoints, addEXP, unlockReward } = this.deps;
+    const { createExplosion, powerups, Powerup, asteroids, enemyBullets, setShake, awardPoints, addEXP, unlockReward, applyShockwave } = this.deps;
     this.defeated = true;
+    // Overlay: stronger ripple on defeat
+    try {
+      if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.pulseDistort) {
+        window.glRenderer.pulseDistort(0.7);
+      }
+    } catch (e) {}
+    // Extra chromatic rings and streaks
+    try {
+      if (typeof window !== 'undefined' && window.glRenderer) {
+        const gl = window.glRenderer;
+        if (gl.spawnChromaticRing) {
+          gl.spawnChromaticRing(this.x, this.y, 60, 3, 1.03, 0.94, 3);
+          gl.spawnChromaticRing(this.x, this.y, 120, 3, 1.02, 0.94, 4);
+        }
+        if (gl.pulseExplosion) gl.pulseExplosion(1.0, this.x, this.y);
+      }
+    } catch (e) {}
     // Big red shockwave + white screen flash FX
     const { getFrameCount } = this.deps;
     this.deathFx = {
@@ -941,7 +1220,9 @@ export class ColossusBoss {
       embersUntil: ((typeof getFrameCount === 'function') ? getFrameCount() : 0) + 120 // 2s of afterglow
     };
     // Optionally still spawn some particles for debris but keep it light (doubled radius)
-    createExplosion && createExplosion(this.x, this.y, this.coreRadius * 4.4, '#f00');
+    createExplosion && createExplosion(this.x, this.y, this.coreRadius * 4.8, '#f00');
+    // Massive gameplay shockwave pushback
+    try { if (applyShockwave) applyShockwave(this.x, this.y, 520, 12); } catch (e) {}
     setShake(24, 8);
     // Award fixed points for defeating the core
     awardPoints(1000, this.x, this.y, true);
@@ -956,12 +1237,10 @@ export class ColossusBoss {
       const dx = this.x + Math.cos(ang) * dist;
       const dy = this.y + Math.sin(ang) * dist;
       const type = this.pickPowerupType();
-      if (powerups.length < 4) powerups.push(new Powerup(dx, dy, type));
+      if (powerups && Powerup) powerups.push(new Powerup(dx, dy, type));
     }
-    // 50% chance to drop +1 life power-up
-    if (Math.random() < 0.5 && powerups.length < 4) {
-      powerups.push(new Powerup(this.x, this.y, 'life'));
-    }
+    // Guaranteed +1 life drop regardless of current field cap
+    if (powerups && Powerup) powerups.push(new Powerup(this.x, this.y, 'life'));
     // Cleanup: remove shard minions and armored asteroids spawned during the fight
     const filtered = asteroids.filter(a => !a.armored);
     asteroids.length = 0;
@@ -981,8 +1260,8 @@ export class ColossusBoss {
 
   pickPowerupType() {
     // Same weights as normal asteroid drop
-    const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
-    const weights = [20, 30, 20, 20, 15, 10, 10, 10];
+    const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'durable'];
+    const weights = [20, 30, 20, 20, 15, 10, 10, 10, 10];
     const total = weights.reduce((a, b) => a + b, 0);
     let r = Math.random() * total;
     for (let i = 0; i < types.length; i++) {

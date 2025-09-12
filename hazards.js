@@ -8,6 +8,8 @@ import {
   TETHER_LINE_BASE_WIDTH,
   TETHER_SPEED_AFTER_BREAK,
   TETHER_RESPAWN_FRAMES,
+  BLACK_HOLE_RADIUS,
+  BLACK_HOLE_RELOCATE_FRAMES,
 } from './constants.js';
 
 // Cached glow/ring sprite factory to avoid per-frame shadowBlur cost
@@ -58,6 +60,199 @@ class GlowSpriteFactory {
     sctx.shadowBlur = 0;
     this.cache.set(key, c);
     return c;
+  }
+}
+// Black Hole hazard (Level 13)
+// Absorbs player bullets, damages player on contact, and slowly pulls nearby powerups (only) to destroy them.
+export class BlackHole {
+  constructor(canvas, player) {
+    this.radius = BLACK_HOLE_RADIUS;
+    this.pulse = 0;
+    this.spawnAlpha = 0; // grows 0->1 over fade-in
+    this.fadeInFrames = 120; // doubled fade-in duration
+    this.relocateTimer = BLACK_HOLE_RELOCATE_FRAMES; // ~5s
+    this.flowParticles = [];
+    this.flowSpawnAccum = 0;
+    this.#buildJaggedPath();
+    // Initial placement away from edges and player
+    this._playerRef = player || null;
+    this.respawn(canvas, player);
+    // Phases: fadeIn -> active -> fadeOut -> respawn -> fadeIn
+    this.phase = 'fadeIn';
+  }
+  // Visual growth from 0.3x -> 1.0x over fade-in
+  #getScale() { return 0.3 + 0.7 * (this.spawnAlpha ?? 1); }
+  #effectiveRadius() { return this.radius * this.#getScale(); }
+  respawn(canvas, player) {
+    if (player) this._playerRef = player;
+    const margin = Math.min(canvas.width, canvas.height) * 0.1;
+    const safeDistFromPlayer = (player && player.radius ? player.radius : 20) + this.radius * 1.2;
+    let tries = 0;
+    do {
+      this.x = margin + Math.random() * (canvas.width - margin * 2);
+      this.y = margin + Math.random() * (canvas.height - margin * 2);
+      tries++;
+    } while (player && Math.hypot(this.x - player.x, this.y - player.y) < safeDistFromPlayer && tries < 200);
+    this.spawnAlpha = 0;
+    this.relocateTimer = BLACK_HOLE_RELOCATE_FRAMES;
+  }
+  update(canvas, powerups) {
+    this.pulse += 0.045;
+    // Phase handling: fade-in, active, fade-out
+    if (this.phase === 'fadeIn') {
+      if (this.spawnAlpha < 1) {
+        this.spawnAlpha += 1 / this.fadeInFrames;
+        if (this.spawnAlpha >= 1) { this.spawnAlpha = 1; this.phase = 'active'; }
+      }
+    } else if (this.phase === 'active') {
+      if (this.relocateTimer > 0) this.relocateTimer--;
+    } else if (this.phase === 'fadeOut') {
+      if (this.spawnAlpha > 0) {
+        this.spawnAlpha -= 1 / this.fadeInFrames;
+        if (this.spawnAlpha <= 0) { this.spawnAlpha = 0; this.respawn(canvas, this._playerRef); this.phase = 'fadeIn'; }
+      }
+    }
+    // Inward particle stream (purple/blue stars/debris)
+    const startR = this.#effectiveRadius() * 1.6;
+    const spawnRate = 2.5 * (this.spawnAlpha ?? 1);
+    this.flowSpawnAccum += spawnRate;
+    let toSpawn = Math.floor(this.flowSpawnAccum);
+    if (toSpawn > 0) this.flowSpawnAccum -= toSpawn;
+    for (let i = 0; i < toSpawn; i++) {
+      if (this.flowParticles.length > 90) break;
+      const ang = Math.random() * Math.PI * 2;
+      const life = 200 + Math.random() * 180;
+      this.flowParticles.push({ ang, age: 0, life, r0: startR * (0.9 + Math.random() * 0.2), size: 1.0 + Math.random() * 1.8, tint: Math.random() < 0.5 ? '#a8f' : (Math.random() < 0.5 ? '#68f' : '#fff'), spin: (Math.random() - 0.5) * 0.12 });
+    }
+    for (let i = this.flowParticles.length - 1; i >= 0; i--) {
+      const p = this.flowParticles[i];
+      p.age++; p.ang += p.spin;
+      if (p.age >= p.life) this.flowParticles.splice(i, 1);
+    }
+    // Suction for nearby powerups only
+    if (powerups && powerups.length) {
+      const influence = this.#effectiveRadius() * 2.2;
+      for (let i = 0; i < powerups.length; i++) {
+        const pu = powerups[i];
+        const dx = this.x - pu.x, dy = this.y - pu.y;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d < influence) {
+          const nx = dx / d, ny = dy / d;
+          // Reduce suction speed by 60% (keep same range)
+          pu.vx = (pu.vx || 0) * 0.98 + nx * 0.02;
+          pu.vy = (pu.vy || 0) * 0.98 + ny * 0.02;
+          if (d < this.#effectiveRadius()) pu.dead = true;
+        }
+      }
+    }
+  }
+  draw(ctx) {
+    const prevOp = ctx.globalCompositeOperation;
+    // Outer neon halo rings (blue/purple) — use cached ring sprites
+    ctx.globalCompositeOperation = 'lighter';
+    const scale = this.#getScale();
+    for (let i = 2; i >= 0; i--) {
+      // Make outermost line black instead of purple
+      const c = (i === 2) ? '#000' : (i === 0 ? '#6af' : (i === 1 ? '#98f' : '#80f'));
+      const r = this.radius * scale * (0.55 + i * 0.16) + Math.sin(this.pulse + i) * 3.5;
+      const ring = GlowSpriteFactory.getRing(c, i === 0 ? 'thick' : 'thin');
+      const alpha = (i === 0 ? 0.9 : 0.35) * (this.spawnAlpha ?? 1);
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(ring, this.x - r, this.y - r, r * 2, r * 2);
+    }
+    // Inward-moving thin rings (subtle)
+    const startR = this.radius * scale * 1.6;
+    const basePhase = ((this.pulse * 0.055) % 1 + 1) % 1;
+    const ringSprite = GlowSpriteFactory.getRing('#a8f', 'thin_hq');
+    for (let k = 0; k < 3; k++) {
+      let t = (basePhase + k / 3) % 1;
+      const te = (1 - Math.cos(t * Math.PI)) * 0.5;
+      const rMove = Math.max(3, startR * (1 - te));
+      const alpha = 0.35 * (rMove / startR) * (this.spawnAlpha ?? 1);
+      if (alpha <= 0.01) continue;
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(ringSprite, this.x - rMove, this.y - rMove, rMove * 2, rMove * 2);
+    }
+    // Core jagged dark disc with subtle blue/purple gradient (pulsating)
+    ctx.globalCompositeOperation = prevOp;
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    const s = (0.9 + 0.05 * Math.sin(this.pulse * 1.4)) * this.#getScale();
+    ctx.scale(s, s);
+    const grad = ctx.createRadialGradient(0, 0, 2, 0, 0, this.radius * 0.92);
+    grad.addColorStop(0.0, 'rgba(0,0,0,0.95)');
+    grad.addColorStop(0.6, 'rgba(30, 0, 50, 0.9)');
+    grad.addColorStop(1.0, 'rgba(0, 0, 0, 0.85)');
+    ctx.globalAlpha = 0.85 * (this.spawnAlpha ?? 1);
+    // Blur the edges of the jagged shape with an outward black shadow glow (~50px)
+    ctx.fillStyle = grad;
+    ctx.shadowColor = 'rgba(0,0,0,0.8)';
+    ctx.shadowBlur = 50;
+    if (this.corePath) ctx.fill(this.corePath); else { ctx.beginPath(); ctx.arc(0, 0, this.radius * 0.92, 0, Math.PI * 2); ctx.fill(); }
+    ctx.shadowBlur = 0;
+    ctx.restore();
+    // Inward particles (additive)
+    const dotWhite = GlowSpriteFactory.getDot('#fff');
+    const dotBlue = GlowSpriteFactory.getDot('#9ef');
+    const dotPurple = GlowSpriteFactory.getDot('#a8f');
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < this.flowParticles.length; i++) {
+      const p = this.flowParticles[i];
+      const t = Math.min(1, p.age / p.life);
+      const te = (1 - Math.cos(t * Math.PI)) * 0.5;
+      const rNow = p.r0 * (1 - te);
+      const x = this.x + Math.cos(p.ang) * rNow;
+      const y = this.y + Math.sin(p.ang) * rNow;
+      // Increase particle alpha by 50%
+      const a = Math.min(1, 0.825 * (1 - te) * (this.spawnAlpha ?? 1));
+      if (a <= 0.01) continue;
+      ctx.globalAlpha = a;
+      const spr = (p.tint === '#fff') ? dotWhite : (p.tint === '#9ef' ? dotBlue : dotPurple);
+      const size = p.size * (0.5 + 0.5 * te);
+      ctx.drawImage(spr, x - size, y - size, size * 2, size * 2);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = prevOp;
+  }
+  // Returns true if bullet at (bx,by,br) should be absorbed (removed)
+  absorbsBullet(bx, by, br) {
+    const dx = bx - this.x, dy = by - this.y;
+    const r = this.#effectiveRadius() * 0.95;
+    return (dx * dx + dy * dy) <= (r + br) * (r + br);
+  }
+  // True if player is inside damaging radius
+  touchesPlayer(px, py, pr) {
+    const dx = px - this.x, dy = py - this.y;
+    return Math.hypot(dx, dy) <= (this.#effectiveRadius() + pr * 0.6);
+  }
+  // Called by game to advance relocation; returns true if a relocation occurred
+  maybeRelocate(canvas, player) {
+    // Start fade-out when timer elapses; actual respawn happens after fade-out completes
+    if (this.phase === 'active' && this.relocateTimer <= 0) {
+      if (player) this._playerRef = player;
+      this.phase = 'fadeOut';
+      // Return true so caller can play a cue indicating relocation start
+      return true;
+    }
+    return false;
+  }
+  #buildJaggedPath() {
+    // Build a jagged circular path for the core perimeter
+    const verts = [];
+    const n = 16;
+    for (let i = 0; i < n; i++) {
+      const ang = (i / n) * Math.PI * 2;
+      const variance = 0.84 + Math.random() * 0.28;
+      verts.push({ angle: ang, radius: this.radius * 0.92 * variance });
+    }
+    const path = new Path2D();
+    for (let j = 0; j < verts.length; j++) {
+      const vx = Math.cos(verts[j].angle) * verts[j].radius;
+      const vy = Math.sin(verts[j].angle) * verts[j].radius;
+      if (j === 0) path.moveTo(vx, vy); else path.lineTo(vx, vy);
+    }
+    path.closePath();
+    this.corePath = path;
   }
 }
 

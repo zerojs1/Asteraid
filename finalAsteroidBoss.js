@@ -49,6 +49,12 @@ export class FinalAsteroidBoss {
     this.coreAngle = 0;
     this.shellRotateSpeed = 0.0022;
     this.coreRotateSpeed = -0.003;
+    // Background structure slow rotation (purely visual)
+    this.structureAngle = 0;
+    this.structureRotateSpeed = 0.0008;
+    // Even larger back structure layer (purely visual)
+    this.structureBackAngle = 0;
+    this.structureBackRotateSpeed = -0.0005;
 
     // Core pushback pulses
     this.pulseCooldown = 300; // every 5s
@@ -73,6 +79,7 @@ export class FinalAsteroidBoss {
       hitFlash: 0,
       chargeTimer: 0,
       fireTimer: 0,
+      postFireGlow: 0,    // frames of white glow after firing
       aimX: 0, aimY: 0,
     }));
 
@@ -100,6 +107,9 @@ export class FinalAsteroidBoss {
     this.coreSparkSprite = null;
     this.buildCoreSparkSprite();
 
+    // Battery embers (white/soft) emitted when a battery finishes firing
+    this.batteryEmbers = [];
+
     // Core vulnerable shard-burst state
     this.coreVulnerable = false; // becomes true when shell is destroyed
     this.coreShardCooldown = 0;  // frames until next burst
@@ -119,6 +129,60 @@ export class FinalAsteroidBoss {
     this._lastCanvasW = canvas.width;
     this._lastCanvasH = canvas.height;
     this._lastDpr = this.dpr;
+
+    // Special UFOs spawned when core is invulnerable (initial phase)
+    this.specialUFOs = []; // array of UFO instances managed by the boss
+    this._spawnedUFOsOnInvuln = false;
+
+    // Final full-screen explosion overlay timer
+    this._finalBlastTimer = 0; // frames remaining (drawn in draw())
+  }
+
+  // Even larger back structure layer (pure visuals)
+  buildStructureBackSprite() {
+    const margin = Math.max(120, this.shellRadius * 0.9);
+    const size = (this.shellRadius * 3.6) + margin * 2;
+    const canvas = this.createOffscreen(size, size);
+    if (!canvas) { this.structureBackSprite = null; return; }
+    const s = canvas.getContext('2d');
+    s.save(); s.scale(this.dpr, this.dpr); s.translate(size / 2, size / 2);
+
+    const Rb0 = this.shellRadius * 1.8;   // huge outer hex ring
+    const Rb1 = this.shellRadius * 1.35;  // inner back ring
+
+    // Massive hex panel backer
+    s.save(); s.globalAlpha = 0.5; s.strokeStyle = '#3a0a0a'; s.lineWidth = 10; s.fillStyle = 'rgba(60,12,12,0.25)';
+    s.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+      const x = Math.cos(a) * Rb0, y = Math.sin(a) * Rb0;
+      if (i === 0) s.moveTo(x, y); else s.lineTo(x, y);
+    }
+    s.closePath(); s.fill(); s.stroke(); s.restore();
+
+    // Secondary larger hex outline for depth
+    s.save(); s.globalAlpha = 0.35; s.strokeStyle = 'rgba(255,120,120,0.3)'; s.lineWidth = 6;
+    s.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const x = Math.cos(a) * (Rb0 * 1.12), y = Math.sin(a) * (Rb0 * 1.12);
+      if (i === 0) s.moveTo(x, y); else s.lineTo(x, y);
+    }
+    s.closePath(); s.stroke(); s.restore();
+
+    // Inner ring lattice
+    s.save(); s.globalAlpha = 0.3; s.strokeStyle = 'rgba(255,140,140,0.25)'; s.lineWidth = 3;
+    const segs = 18; const span = Math.PI * 2 / segs;
+    for (let i = 0; i < segs; i++) {
+      const a0 = i * span, a1 = (i + 1) * span;
+      const x0 = Math.cos(a0) * Rb1, y0 = Math.sin(a0) * Rb1;
+      const x1 = Math.cos(a1) * Rb1, y1 = Math.sin(a1) * Rb1;
+      s.beginPath(); s.moveTo(x0, y0); s.lineTo(x1, y1); s.stroke();
+    }
+    s.restore();
+
+    s.restore();
+    this.structureBackSprite = canvas;
   }
 
   isDefeated() { return this.defeated; }
@@ -126,7 +190,7 @@ export class FinalAsteroidBoss {
   anyBatteriesAlive() { return this.batteries.some(b => b.hits > 0); }
 
   update() {
-    const { player, lineCircleCollision, onPlayerHit, applyShockwave, createExplosion, drones, Drone, AttackDrone, getFrameCount } = this.deps;
+    const { player, lineCircleCollision, onPlayerHit, applyShockwave, createExplosion, drones, Drone, AttackDrone, getFrameCount, bullets, enemyBullets, EnemyBullet, asteroids } = this.deps;
 
     // Timers
     if (this.spawnInvuln > 0) this.spawnInvuln--;
@@ -135,6 +199,21 @@ export class FinalAsteroidBoss {
     // Rotation: shell rotates slowly clockwise while shields up; stop when shell becomes vulnerable
     if (this.anyBatteriesAlive()) {
       this.shellAngle += this.shellRotateSpeed;
+    }
+
+    // Update battery embers (white) and cull
+    if (this.batteryEmbers.length) {
+      const { canvas } = this.deps;
+      for (let i = this.batteryEmbers.length - 1; i >= 0; i--) {
+        const e = this.batteryEmbers[i];
+        e.x += e.vx; e.y += e.vy;
+        e.vx *= 0.985; e.vy *= 0.985;
+        e.life--;
+        if (!canvas || e.life <= 0 || e.x < -24 || e.y < -24 || e.x > canvas.width + 24 || e.y > canvas.height + 24) {
+          this.batteryEmbers.splice(i, 1);
+        }
+      }
+      if (this.batteryEmbers.length > 340) this.batteryEmbers.length = 340;
     }
 
     this.coreAngle += this.coreRotateSpeed;
@@ -153,6 +232,12 @@ export class FinalAsteroidBoss {
       if (applyShockwave) applyShockwave(this.x, this.y, radius, strength);
       if (createExplosion) createExplosion(this.x, this.y, 140, '#ff8888');
       if (this.deps.setShake) this.deps.setShake(14, 6);
+      // Bloom hook on core pulse (optional)
+      try {
+        const gl = this.deps.glRenderer;
+        if (gl && gl.pulseExplosion) gl.pulseExplosion(this.x, this.y, 0.4);
+        if (gl && gl.pulseBloom) gl.pulseBloom(this.x, this.y, 0.6, 45);
+      } catch (e) {}
       this.pulses.push({ age: 0, life: 36, maxRadius: radius, color: '#ff7777' });
       this.pulseCooldown = 300;
     }
@@ -167,6 +252,23 @@ export class FinalAsteroidBoss {
         b.chargeTimer = 90; // 1.5s charge
         b.fireTimer = 0;
         b.aimX = player.x; b.aimY = player.y; // capture
+        // Start a brief white glow and emit embers at the start of charging
+        b.postFireGlow = 60; // reuse timer as a 1s charge flash
+        const burst = 16;
+        for (let i = 0; i < burst; i++) {
+          const a = (i / burst) * Math.PI * 2 + Math.random() * 0.3;
+          const sp = 1.2 + Math.random() * 1.4;
+          const vx = Math.cos(a) * sp;
+          const vy = Math.sin(a) * sp;
+          const life = 36 + (Math.random() * 18) | 0;
+          this.batteryEmbers.push({ x: b.x, y: b.y, vx, vy, life, maxLife: life });
+        }
+        // Bloom hook near battery/structure on charge start (optional)
+        try {
+          const gl = this.deps.glRenderer;
+          if (gl && gl.pulseExplosion) gl.pulseExplosion(b.x, b.y, 0.25);
+          if (gl && gl.pulseBloom) gl.pulseBloom(b.x, b.y, 0.8, 45);
+        } catch (e) {}
       }
       this.batteryLaserCooldown = 156; // schedule next (35% faster than 240)
     }
@@ -205,6 +307,10 @@ export class FinalAsteroidBoss {
           const size = 0.8 + Math.random() * 0.8;
           this.laserEmbers.push({ x: sx, y: sy, vx, vy, life, maxLife: life, size });
         }
+        // End-of-fire no longer triggers glow/embers (handled at charge start)
+      } else {
+        // Countdown post-fire glow when idle
+        if (b.postFireGlow > 0) b.postFireGlow--;
       }
     }
 
@@ -338,6 +444,35 @@ export class FinalAsteroidBoss {
       }
     }
 
+    // One-time spawn of two special UFOs when the core becomes vulnerable (shell destroyed)
+    if (!this._spawnedUFOsOnInvuln && this.shellHits <= 0) {
+      this.spawnSpecialUFOs();
+      this._spawnedUFOsOnInvuln = true;
+    }
+
+    // Update special UFOs and handle player bullet collisions locally (no points/EXP/drops)
+    if (this.specialUFOs && this.specialUFOs.length) {
+      for (let i = this.specialUFOs.length - 1; i >= 0; i--) {
+        const u = this.specialUFOs[i];
+        if (u && typeof u.update === 'function') u.update(player, enemyBullets, EnemyBullet, asteroids);
+        if (bullets && bullets.length && !u.dead && !u.despawned) {
+          for (let b = bullets.length - 1; b >= 0; b--) {
+            const bullet = bullets[b];
+            const dxu = bullet.x - u.x, dyu = bullet.y - u.y;
+            if (Math.hypot(dxu, dyu) < (u.radius + (bullet.radius || 4))) {
+              bullets.splice(b, 1);
+              if (u.takeHit) u.takeHit(1);
+              break;
+            }
+          }
+        }
+        if (u.dead || u.despawned) {
+          this.specialUFOs.splice(i, 1);
+        }
+      }
+      if (this.specialUFOs.length > 4) this.specialUFOs.length = 4;
+    }
+
     // Periodic AttackDrone spawner (every ~3s), cap 5 alive, spawn from core location
     if (AttackDrone && drones) {
       if (this.attackDroneCooldown > 0) this.attackDroneCooldown--;
@@ -394,6 +529,104 @@ export class FinalAsteroidBoss {
         }
       }
     }
+    // Rebuild structure sprite on resize to match current radii
+    this.buildStructureSprite();
+  }
+
+  // Large space-frame scaffold sprite behind the boss (pure visuals)
+  buildStructureSprite() {
+    const margin = Math.max(80, this.shellRadius * 0.6);
+    const size = (this.shellRadius * 2.8) + margin * 2;
+    const canvas = this.createOffscreen(size, size);
+    if (!canvas) { this.structureSprite = null; return; }
+    const s = canvas.getContext('2d');
+    s.save(); s.scale(this.dpr, this.dpr); s.translate(size / 2, size / 2);
+
+    const R0 = this.shellRadius * 1.05;     // outermost ring just outside shell
+    const R1 = this.shellRadius * 0.82;     // mid ring
+    const R2 = this.shellRadius * 0.56;     // inner frame ring
+    const RHex = this.shellRadius * 1.45;   // hex frame outside
+
+    // Base soft vignette disc to hint mass (very subtle)
+    const g = s.createRadialGradient(0, 0, R2 * 0.3, 0, 0, R0 * 1.4);
+    g.addColorStop(0.0, 'rgba(60,12,12,0.22)');
+    g.addColorStop(1.0, 'rgba(0,0,0,0)');
+    s.fillStyle = g; s.beginPath(); s.arc(0, 0, R0 * 1.4, 0, Math.PI * 2); s.fill();
+
+    // Concentric structural rings
+    const ring = (r, w, col, alpha, dash=[]) => {
+      s.save(); s.globalAlpha = alpha; s.strokeStyle = col; s.lineWidth = w; s.setLineDash(dash);
+      s.beginPath(); s.arc(0, 0, r, 0, Math.PI * 2); s.stroke(); s.restore();
+    };
+    ring(R0, 6, '#4a1010', 0.6);
+    ring(R0 - 14, 2, 'rgba(255,150,150,0.45)', 0.55, [12, 8]);
+    ring(R1, 4, '#3a0a0a', 0.65);
+    ring(R1 - 10, 2, 'rgba(255,140,140,0.38)', 0.65, [8, 6]);
+    ring(R2, 3, '#320909', 0.6);
+
+    // Radial spokes
+    s.save();
+    s.strokeStyle = 'rgba(255,160,160,0.22)'; s.lineWidth = 2;
+    const spokes = 16;
+    for (let i = 0; i < spokes; i++) {
+      const a = (i / spokes) * Math.PI * 2;
+      const x0 = Math.cos(a) * (R2 * 0.9);
+      const y0 = Math.sin(a) * (R2 * 0.9);
+      const x1 = Math.cos(a) * (R0 * 1.02);
+      const y1 = Math.sin(a) * (R0 * 1.02);
+      s.beginPath(); s.moveTo(x0, y0); s.lineTo(x1, y1); s.stroke();
+    }
+    s.restore();
+
+    // Outer hexagonal frame
+    s.save(); s.globalAlpha = 0.55; s.strokeStyle = '#3a0a0a'; s.lineWidth = 6;
+    s.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+      const x = Math.cos(a) * RHex, y = Math.sin(a) * RHex;
+      if (i === 0) s.moveTo(x, y); else s.lineTo(x, y);
+    }
+    s.closePath(); s.stroke(); s.restore();
+
+    // Cross-bracing between rings (triangulated)
+    s.save(); s.globalAlpha = 0.3; s.strokeStyle = 'rgba(255,120,120,0.28)'; s.lineWidth = 2;
+    const segs = 24; const span = Math.PI * 2 / segs;
+    for (let i = 0; i < segs; i++) {
+      const a0 = i * span, a1 = (i + 1) * span;
+      const x0 = Math.cos(a0) * R2, y0 = Math.sin(a0) * R2;
+      const x1 = Math.cos(a1) * R2, y1 = Math.sin(a1) * R2;
+      const x2 = Math.cos(a0 + span * 0.5) * R1, y2 = Math.sin(a0 + span * 0.5) * R1;
+      s.beginPath(); s.moveTo(x0, y0); s.lineTo(x2, y2); s.lineTo(x1, y1); s.stroke();
+    }
+    s.restore();
+
+    // Mount plates around inner frame
+    s.save(); s.globalAlpha = 0.5; s.fillStyle = 'rgba(70,20,20,0.6)'; s.strokeStyle = 'rgba(255,200,200,0.18)'; s.lineWidth = 1.5;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
+      const rr = R2 * 0.92;
+      const cx = Math.cos(a) * rr, cy = Math.sin(a) * rr;
+      const w = 22, h = 10;
+      s.save(); s.translate(cx, cy); s.rotate(a + Math.PI / 2);
+      s.beginPath(); s.rect(-w / 2, -h / 2, w, h); s.fill(); s.stroke();
+      s.restore();
+    }
+    s.restore();
+
+    s.restore();
+    this.structureSprite = canvas;
+    // Generate beacon anchors (polar) for dynamic blinking lights
+    this.beaconAnchors = [];
+    // Hex vertices
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+      this.beaconAnchors.push({ r: RHex, a, phase: Math.random() * Math.PI * 2 });
+    }
+    // Inner ring beacons
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      this.beaconAnchors.push({ r: R1, a, phase: Math.random() * Math.PI * 2 });
+    }
   }
 
   draw() {
@@ -406,6 +639,162 @@ export class FinalAsteroidBoss {
     this.refreshIfDisplayChanged();
     const shieldsUp = this.anyBatteriesAlive();
 
+    // --- Background structure (behind everything) ---
+    // Slow rotation for imposing space-frame silhouette
+    // Back layer first
+    this.structureBackAngle += this.structureBackRotateSpeed;
+    if (this.structureBackSprite) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.structureBackAngle);
+      const spr = this.structureBackSprite;
+      ctx.globalAlpha = 0.85;
+      ctx.drawImage(spr, -spr.width / (2 * this.dpr), -spr.height / (2 * this.dpr), spr.width / this.dpr, spr.height / this.dpr);
+      ctx.restore();
+    }
+    this.structureAngle += this.structureRotateSpeed;
+    if (this.structureSprite) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.structureAngle);
+      const spr = this.structureSprite;
+      ctx.globalAlpha = 0.95;
+      ctx.drawImage(spr, -spr.width / (2 * this.dpr), -spr.height / (2 * this.dpr), spr.width / this.dpr, spr.height / this.dpr);
+      ctx.restore();
+    }
+    // Blinking beacons on structure (additive)
+    if (this.beaconAnchors && this.beaconAnchors.length) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (const b of this.beaconAnchors) {
+        const a = this.structureAngle + b.a;
+        const px = this.x + Math.cos(a) * b.r;
+        const py = this.y + Math.sin(a) * b.r;
+        const blink = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin((t * 0.15) + b.phase));
+        ctx.globalAlpha = 0.25 * blink;
+        ctx.shadowColor = '#fff5f5';
+        ctx.shadowBlur = 8 * blink + 4;
+        ctx.fillStyle = '#ffeaea';
+        ctx.beginPath(); ctx.arc(px, py, 2.2 + 0.8 * blink, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+    // Soft AO/fog ellipse under shell (rotates subtly with structure)
+    {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.structureAngle * 0.6);
+      ctx.scale(1, 0.7);
+      const rAO = this.shellRadius * 1.15;
+      const g = ctx.createRadialGradient(0, 0, rAO * 0.2, 0, 0, rAO);
+      g.addColorStop(0.0, 'rgba(60, 12, 12, 0.12)');
+      g.addColorStop(1.0, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = g;
+      ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.arc(0, 0, rAO, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    // Rotating machinery arms around the shell
+    {
+      const armCount = 6;
+      const baseR = this.shellRadius * 0.95;
+      const armLen = this.shellRadius * 0.55;
+      for (let i = 0; i < armCount; i++) {
+        const a = this.structureAngle * 1.2 + (i / armCount) * Math.PI * 2;
+        const ax = this.x + Math.cos(a) * baseR;
+        const ay = this.y + Math.sin(a) * baseR;
+        const th = a + Math.PI / 2;
+        ctx.save();
+        ctx.translate(ax, ay);
+        ctx.rotate(th);
+        // arm body
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = '#4a1010';
+        ctx.strokeStyle = 'rgba(255,130,130,0.3)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.rect(-6, -armLen * 0.1, 12, armLen);
+        ctx.fill(); ctx.stroke();
+        // joint ring
+        ctx.globalAlpha = 0.8;
+        ctx.strokeStyle = 'rgba(255,120,120,0.35)';
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(0, 0, 10, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
+    }
+    // Dynamic connector beams from core to batteries (under tethers)
+    if (this.batteries && this.batteries.length) {
+      for (const bb of this.batteries) {
+        if (bb.hits <= 0) continue;
+        ctx.save();
+        // Base dark beam
+        ctx.globalAlpha = 0.65;
+        ctx.strokeStyle = '#3a0a0a';
+        ctx.lineWidth = 18;
+        ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(bb.x, bb.y); ctx.stroke();
+        // Inner light scaffold line
+        ctx.globalAlpha = 0.65;
+        ctx.strokeStyle = 'rgba(255,110,110,0.45)';
+        ctx.lineWidth = 3;
+        ctx.setLineDash([10, 12]);
+        ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(bb.x, bb.y); ctx.stroke();
+        ctx.setLineDash([]);
+        // Small perpendicular brackets along the beam
+        const steps = 5;
+        const dx = bb.x - this.x, dy = bb.y - this.y;
+        const ang = Math.atan2(dy, dx);
+        const nx = Math.cos(ang), ny = Math.sin(ang);
+        for (let i = 1; i < steps; i++) {
+          const tpos = i / steps;
+          const px = this.x + dx * tpos;
+          const py = this.y + dy * tpos;
+          const bx = -ny, by = nx; // perpendicular
+          ctx.globalAlpha = 0.65;
+          ctx.strokeStyle = 'rgba(255,120,120,0.55)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(px - bx * 10, py - by * 10);
+          ctx.lineTo(px + bx * 10, py + by * 10);
+          ctx.stroke();
+        }
+        // Connector pulse traveling from core to battery during CHARGE
+        if (bb.chargeTimer > 0) {
+          const prog = 1 - (bb.chargeTimer / 90);
+          const pulsePos = Math.max(0, Math.min(1, prog));
+          const px = this.x + dx * pulsePos;
+          const py = this.y + dy * pulsePos;
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = 0.75;
+          ctx.shadowBlur = 16; ctx.shadowColor = '#ffffff';
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath(); ctx.arc(px, py, 5.5, 0, Math.PI * 2); ctx.fill();
+          // short glowing segment behind the pulse
+          ctx.globalAlpha = 0.45;
+          ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 6;
+          const sx = this.x + dx * Math.max(0, pulsePos - 0.12);
+          const sy = this.y + dy * Math.max(0, pulsePos - 0.12);
+          ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(px, py); ctx.stroke();
+          // Beacon sequence: cascading pips along the connector
+          const seqCount = 6;
+          for (let k = 0; k < seqCount; k++) {
+            const ph = (t * 0.015 + k * 0.16) % 1;
+            if (ph <= pulsePos) {
+              const qx = this.x + dx * ph;
+              const qy = this.y + dy * ph;
+              ctx.globalAlpha = 0.35;
+              ctx.shadowBlur = 10; ctx.shadowColor = '#ffffff';
+              ctx.fillStyle = '#ffffff';
+              ctx.beginPath(); ctx.arc(qx, qy, 3, 0, Math.PI * 2); ctx.fill();
+            }
+          }
+          ctx.restore();
+        }
+        ctx.restore();
+      }
+    }
+
     // Batteries first (behind boss body for depth) - use pre-rendered sprites
     for (let b of this.batteries) {
       if (b.hits <= 0) continue;
@@ -414,6 +803,20 @@ export class FinalAsteroidBoss {
         ctx.save();
         ctx.translate(b.x, b.y);
         ctx.drawImage(sprite, -sprite.width / (2 * this.dpr), -sprite.height / (2 * this.dpr), sprite.width / this.dpr, sprite.height / this.dpr);
+        ctx.restore();
+      }
+      // Additive, non-occluding white glow ring (fades over 1s)
+      if (b.postFireGlow > 0) {
+        const tnorm = b.postFireGlow / 60; // 1.0 -> 0.0
+        const glowR = b.radius + 4 + (1 - tnorm) * 8;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = Math.max(0, 0.19 * tnorm);
+        ctx.shadowBlur = 22 * tnorm + 6;
+        ctx.shadowColor = '#ffffff';
+        ctx.strokeStyle = 'rgba(255, 241, 241, 0.95)';
+        ctx.lineWidth = 10 + 10 * tnorm; // hollow ring so center stays visible
+        ctx.beginPath(); ctx.arc(b.x, b.y, glowR, 0, Math.PI * 2); ctx.stroke();
         ctx.restore();
       }
       // Red-hot core indicator: always present, doubles during charge to show which battery will fire
@@ -448,7 +851,7 @@ export class FinalAsteroidBoss {
       if (b.chargeTimer > 0) {
         const prog = 1 - (b.chargeTimer / 90);
         ctx.globalAlpha = 0.9; ctx.shadowBlur = 12; ctx.shadowColor = '#ff0';
-        ctx.strokeStyle = '#ff0'; ctx.lineWidth = 3;
+        ctx.strokeStyle = '#ff0'; ctx.lineWidth = 6;
         ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 10 + Math.sin(prog * Math.PI) * 4, 0, Math.PI * 2); ctx.stroke();
         ctx.shadowBlur = 0; ctx.globalAlpha = 1;
       }
@@ -477,10 +880,17 @@ export class FinalAsteroidBoss {
         ctx.strokeStyle = '#f55';
         ctx.lineWidth = 5;
         ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(ex, ey); ctx.stroke();
-        // Inner white core line for clarity
-        ctx.shadowBlur = 0;
-        ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(ex, ey); ctx.stroke();
+        // Add large white glow overlay along the tether only during CHARGE
+        if (b.chargeTimer > 0) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = 0.35; // low-medium alpha
+          ctx.shadowBlur = 33; ctx.shadowColor = '#ffffff';
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 5; // soft wide glow
+          ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(ex, ey); ctx.stroke();
+          ctx.restore();
+        }
         ctx.globalAlpha = 1;
       }
     }
@@ -605,14 +1015,18 @@ export class FinalAsteroidBoss {
       for (const beam of activeBeams) {
         const flicker = 0.75 + Math.random() * 0.25;
         ctx.globalAlpha = flicker;
-        ctx.shadowBlur = 12 * flicker; ctx.shadowColor = '#f09';
-        ctx.strokeStyle = 'rgba(255,0,128,1)'; ctx.lineWidth = 7;
+        ctx.shadowBlur = 9 * flicker; ctx.shadowColor = '#f09';
+        ctx.strokeStyle = 'rgba(255,0,128,1)';
+        ctx.lineWidth = 5; // 2x thicker beam
         ctx.beginPath(); ctx.moveTo(beam.x1, beam.y1); ctx.lineTo(beam.x2, beam.y2); ctx.stroke();
-        // inner white-hot core
-        ctx.globalAlpha = 1;
-        ctx.shadowBlur = 0;
-        ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 3;
+        // Add large white glow overlay on top of the full laser beam
+        ctx.save();
+        ctx.globalAlpha = 0.65; // medium alpha
+        ctx.shadowBlur = 12; ctx.shadowColor = '#ffffff';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 8; // wide glow pass
         ctx.beginPath(); ctx.moveTo(beam.x1, beam.y1); ctx.lineTo(beam.x2, beam.y2); ctx.stroke();
+        ctx.restore();
       }
       ctx.restore();
       ctx.globalAlpha = 1; ctx.shadowBlur = 0;
@@ -628,8 +1042,8 @@ export class FinalAsteroidBoss {
         const scale = (0.9 + e.size * 0.6) * (1 + prog * 0.6);
         ctx.globalAlpha = alpha;
         if (this.laserEmberSprite) {
-          const dw = (this.laserEmberSprite.width / this.dpr) * scale * 1.2;
-          const dh = (this.laserEmberSprite.height / this.dpr) * scale * 1.2;
+          const dw = (this.laserEmberSprite.width / this.dpr) * scale * 1.0;
+          const dh = (this.laserEmberSprite.height / this.dpr) * scale * 1.0;
           ctx.drawImage(this.laserEmberSprite, e.x - dw / 2, e.y - dh / 2, dw, dh);
         } else {
           ctx.shadowColor = '#ff66cc';
@@ -643,6 +1057,50 @@ export class FinalAsteroidBoss {
       }
       ctx.restore();
       ctx.globalAlpha = 1;
+    }
+
+    // Battery embers (white) additive rendering after beams
+    if (this.batteryEmbers && this.batteryEmbers.length) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (const e of this.batteryEmbers) {
+        const prog = 1 - (e.life / e.maxLife);
+        const alpha = Math.max(0, 0.85 * (1 - prog));
+        const size = 1 + prog * 10; // expand slightly
+        ctx.globalAlpha = alpha;
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 12 * (1 - prog) + 6;
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.beginPath(); ctx.arc(e.x, e.y, size * 0.35, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
+    // Draw special UFOs on top of boss body (they manage their own trails)
+    if (this.specialUFOs && this.specialUFOs.length) {
+      for (const u of this.specialUFOs) {
+        if (u && typeof u.draw === 'function') u.draw(ctx);
+      }
+    }
+
+    // Full-screen explosion overlay when the boss is defeated
+    if (this._finalBlastTimer > 0 && this.deps.canvas) {
+      const c = this.deps.canvas;
+      const t = this._finalBlastTimer / 90; // 90-frame fade
+      // Bright flash center with radial falloff
+      ctx.save();
+      const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, Math.max(c.width, c.height));
+      grad.addColorStop(0.0, 'rgba(255,255,255,' + (0.85 * t).toFixed(3) + ')');
+      grad.addColorStop(0.25, 'rgba(255,220,180,' + (0.6 * t).toFixed(3) + ')');
+      grad.addColorStop(1.0, 'rgba(20,0,0,0)');
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.restore();
+      this._finalBlastTimer--;
     }
 
     // Nothing else to restore here
@@ -688,6 +1146,8 @@ export class FinalAsteroidBoss {
     this.buildCoreSprite();
     this.buildLaserEmberSprite();
     this.buildCoreSparkSprite();
+    this.buildStructureSprite();
+    this.buildStructureBackSprite();
   }
 
   // Detect display changes and rebuild sprites / reposition accordingly
@@ -722,6 +1182,9 @@ export class FinalAsteroidBoss {
       this.batteries[2].x = margin;                this.batteries[2].y = canvas.height - margin - 150;
       this.batteries[3].x = canvas.width - margin; this.batteries[3].y = canvas.height - margin - 150;
     }
+    // Rebuild structure sprite on resize to match current radii
+    this.buildStructureSprite();
+    this.buildStructureBackSprite();
   }
 
   createOffscreen(width, height) {
@@ -945,11 +1408,11 @@ export class FinalAsteroidBoss {
     sctx.translate(size / 2, size / 2);
     // Outer soft glow
     sctx.shadowBlur = 8; sctx.shadowColor = '#ff66cc';
-    sctx.fillStyle = 'rgba(255,80,170,0.75)';
+    sctx.fillStyle = 'rgba(206, 26, 119, 0.35)';
     sctx.beginPath(); sctx.arc(0, 0, 4, 0, Math.PI * 2); sctx.fill();
     // Inner hot core
     sctx.shadowBlur = 0;
-    sctx.fillStyle = 'rgba(255,255,255,0.95)';
+    sctx.fillStyle = 'rgba(255, 117, 237, 0.95)';
     sctx.beginPath(); sctx.arc(0, 0, 1.4, 0, Math.PI * 2); sctx.fill();
     sctx.restore();
     this.laserEmberSprite = c;
@@ -1051,7 +1514,7 @@ export class FinalAsteroidBoss {
           // Battery power-up drop (Level 15 boss): 30% chance
           if (powerups && Powerup && powerups.length < 4) {
             if (Math.random() < 0.3) {
-              const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
+              const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'durable'];
               const type = types[(Math.random() * types.length) | 0];
               powerups.push(new Powerup(b.x, b.y, type));
             }
@@ -1181,6 +1644,19 @@ export class FinalAsteroidBoss {
         }
       }
     }
+    // Also allow particles to damage special UFOs (rainbow trail, flak, etc.)
+    if (this.specialUFOs && this.specialUFOs.length) {
+      for (let i = this.specialUFOs.length - 1; i >= 0; i--) {
+        const u = this.specialUFOs[i];
+        if (u && !u.dead && !u.despawned) {
+          const dxu = particle.x - u.x, dyu = particle.y - u.y;
+          if (Math.hypot(dxu, dyu) < (u.radius + 12)) {
+            if (u.takeHit) u.takeHit(1);
+            if (u.dead || u.despawned) this.specialUFOs.splice(i, 1);
+          }
+        }
+      }
+    }
   }
 
   // Radial explosion damage (e.g., player bomb). Damages batteries in radius,
@@ -1233,6 +1709,18 @@ export class FinalAsteroidBoss {
         }
       }
     }
+    // Explosion damage vs special UFOs
+    if (this.specialUFOs && this.specialUFOs.length) {
+      for (let i = this.specialUFOs.length - 1; i >= 0; i--) {
+        const u = this.specialUFOs[i];
+        if (!u || u.dead || u.despawned) { this.specialUFOs.splice(i, 1); continue; }
+        const dxu = u.x - cx, dyu = u.y - cy;
+        if (Math.hypot(dxu, dyu) <= radius + u.radius) {
+          if (u.takeHit) u.takeHit(1);
+          if (u.dead || u.despawned) this.specialUFOs.splice(i, 1);
+        }
+      }
+    }
     return any;
   }
 
@@ -1274,6 +1762,18 @@ export class FinalAsteroidBoss {
         if (this.coreHealth === 0) this.onDefeated();
       }
     }
+    // Laser vs special UFOs
+    if (this.specialUFOs && this.specialUFOs.length) {
+      for (let i = this.specialUFOs.length - 1; i >= 0; i--) {
+        const u = this.specialUFOs[i];
+        if (!u || u.dead || u.despawned) { this.specialUFOs.splice(i, 1); continue; }
+        if (lineCircleCollision(x1, y1, x2, y2, u.x, u.y, u.radius)) {
+          if (u.applyLaserTick) u.applyLaserTick(1); else if (u.takeHit) u.takeHit(1);
+          if (u.dead || u.despawned) this.specialUFOs.splice(i, 1);
+          any = true;
+        }
+      }
+    }
     return any;
   }
 
@@ -1286,27 +1786,27 @@ export class FinalAsteroidBoss {
 
   onDefeated() {
     if (this.defeated) return;
-    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints, applyShockwave } = this.deps;
+    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints, applyShockwave, glRenderer } = this.deps;
     this.defeated = true;
-    createExplosion && createExplosion(this.x, this.y, this.shellRadius * 3, '#ffaaaa');
-    setShake && setShake(28, 10);
+    // Kick off full-screen blast overlay for ~1.5s
+    this._finalBlastTimer = 90;
+    // Also trigger central explosion and screen shake
+    createExplosion && createExplosion(this.x, this.y, Math.max(220, this.shellRadius * 2.2), '#ffaaaa');
+    setShake && setShake(34, 12);
+    // Pulse WebGL overlay if available
+    try { glRenderer && glRenderer.pulseExplosion && glRenderer.pulseExplosion(this.x, this.y, 1.0); } catch (e) {}
     awardPoints && awardPoints(1200, this.x, this.y, true);
     // Massive arena shockwave push for dramatic finish
     if (applyShockwave) applyShockwave(this.x, this.y, Math.max(800, this.shellRadius * 6), 12);
-    // Ember/shockwave trails: ring of micro-explosions around the boss
+    // Reduce micro-explosions to keep perf while overlay runs (optional fine ring)
     if (createExplosion) {
-      const rings = 2;
-      for (let rIdx = 0; rIdx < rings; rIdx++) {
-        const count = 12 + rIdx * 6;
-        const baseR = this.shellRadius * (1.6 + rIdx * 0.5);
-        for (let i = 0; i < count; i++) {
-          const ang = (i / count) * Math.PI * 2;
-          const jitter = (Math.random() - 0.5) * 24;
-          const rr = baseR + jitter;
-          const ex = this.x + Math.cos(ang) * rr;
-          const ey = this.y + Math.sin(ang) * rr;
-          createExplosion(ex, ey, 36 + ((Math.random() * 18) | 0), '#ffaa99', 'micro');
-        }
+      const count = 18;
+      const baseR = Math.max(260, this.shellRadius * 1.4);
+      for (let i = 0; i < count; i++) {
+        const ang = (i / count) * Math.PI * 2;
+        const ex = this.x + Math.cos(ang) * baseR;
+        const ey = this.y + Math.sin(ang) * baseR;
+        createExplosion(ex, ey, 28 + ((Math.random() * 14) | 0), '#ffaa99', 'micro');
       }
     }
     // Victory HUD message
@@ -1315,7 +1815,7 @@ export class FinalAsteroidBoss {
     if (drones) drones.length = 0;
     // celebratory drops
     if (powerups && Powerup) {
-      const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
+      const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'durable'];
       const drops = 3 + Math.floor(Math.random() * 2);
       for (let i = 0; i < drops; i++) {
         const ang = Math.random() * Math.PI * 2;
@@ -1377,5 +1877,23 @@ export class FinalAsteroidBoss {
         this.deps.showHUDMessage('You beat the asteroids! - Celestial Companion unlocked.', 300);
       }
     } catch (e) {}
+  }
+
+  // Spawn two special UFOs from the core center that fly left and right
+  spawnSpecialUFOs() {
+    const { canvas, getFrameCount, UFO } = this.deps;
+    if (!UFO || !canvas) return;
+    const makeUfo = (dir) => {
+      const u = new UFO({ canvas, getFrameCount });
+      u.x = this.x; u.y = this.y;
+      u.targetY = this.y;
+      const spd = Math.max(1.5, u.speed || 1.2);
+      u.vx = dir < 0 ? -spd : spd;
+      u.health = Math.max(8, Math.min(15, u.health | 0));
+      u._specialBossUFO = true;
+      return u;
+    };
+    this.specialUFOs.push(makeUfo(-1));
+    this.specialUFOs.push(makeUfo(1));
   }
 }

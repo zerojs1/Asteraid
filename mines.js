@@ -39,7 +39,8 @@ export class Mine {
     if (this.exploded) return;
     this.exploded = true;
     createExplosion(this.x, this.y, 80, '#FFA500');
-    applyShockwave(this.x, this.y, shockwaveRadius, pushStrength);
+    // Reduce only the visual ring/pulse size by 40% (physics unchanged)
+    applyShockwave(this.x, this.y, shockwaveRadius, pushStrength, { visualScale: 0.6 });
   }
 
   draw(ctx) {

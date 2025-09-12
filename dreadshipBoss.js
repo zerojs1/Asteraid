@@ -40,6 +40,10 @@ export class DreadshipBoss {
         radius: 24,
         fireCooldown: Math.floor((60 + Math.floor(Math.random() * 20)) * 1.5),
         trail: [], // recent positions for glow trail
+        // subtle bob and angular wobble params (visual)
+        bobPhase: Math.random() * Math.PI * 2,
+        bobAmp: 2 + Math.random() * 4,           // px
+        wobbleAmp: 0.04 + Math.random() * 0.08,  // radians
       });
     }
 
@@ -71,6 +75,10 @@ export class DreadshipBoss {
     // Laser embers
     this.laserEmbers = [];
     this.laserEmberSprite = null;
+    // Core debris (small ash-like particles)
+    this.coreDebris = [];
+    this._coreDebrisPool = [];
+    this.coreDebrisCap = 140;
     // Brief visual ping when core is hit while invulnerable
     this.invulnHitTimer = 0; // frames remaining
     this.invulnHitAngle = 0; // impact angle for arc visualization
@@ -83,6 +91,7 @@ export class DreadshipBoss {
     this.buildShieldSprite();
     this.buildTurretGlowSprite();
     this.buildLaserEmberSprite();
+    this.buildCoreDebrisSprite();
   }
 
   refreshIfDisplayChanged() {
@@ -96,6 +105,41 @@ export class DreadshipBoss {
     if (canvas && (canvas.width !== this._lastCanvasW || canvas.height !== this._lastCanvasH)) {
       this._lastCanvasW = canvas.width;
       this._lastCanvasH = canvas.height;
+    }
+
+    // Core debris emission (low rate; stronger during warning/active)
+    {
+      const { canvas } = this.deps || {};
+      const boost = (this.laserActiveTimer > 0) ? 2 : (this.laserWarningTimer > 0 ? 1.5 : 1);
+      const tries = Math.min(3, Math.ceil(boost));
+      for (let i = 0; i < tries; i++) {
+        if (Math.random() < 0.25 * boost && this.coreDebris.length < this.coreDebrisCap) {
+          const ang = Math.random() * Math.PI * 2;
+          const sp = 0.5 + Math.random() * 1.2;
+          const life = 28 + Math.floor(Math.random() * 26);
+          const d = this._coreDebrisPool.pop() || {};
+          d.x = this.x; d.y = this.y;
+          d.vx = Math.cos(ang) * sp + (this.laserActiveTimer > 0 ? Math.cos(this.laserAngle) * 0.2 : 0);
+          d.vy = Math.sin(ang) * sp + (this.laserActiveTimer > 0 ? Math.sin(this.laserAngle) * 0.2 : 0);
+          d.life = life; d.maxLife = life; d.alpha = 1; d.size = 1 + Math.random() * 1.2;
+          this.coreDebris.push(d);
+        }
+      }
+      // Update & cull
+      if (this.coreDebris.length) {
+        const margin = 50;
+        for (let i = this.coreDebris.length - 1; i >= 0; i--) {
+          const d = this.coreDebris[i];
+          d.x += d.vx; d.y += d.vy;
+          d.vx *= 0.986; d.vy *= 0.986;
+          d.life--; d.alpha *= 0.97;
+          const off = !canvas ? false : (d.x < -margin || d.y < -margin || d.x > canvas.width + margin || d.y > canvas.height + margin);
+          if (d.life <= 0 || d.alpha <= 0.03 || off) {
+            this.coreDebris.splice(i, 1);
+            this._coreDebrisPool.push(d);
+          }
+        }
+      }
     }
   }
 
@@ -280,15 +324,43 @@ export class DreadshipBoss {
     this.shieldSprite = c;
   }
 
+  buildCoreDebrisSprite() {
+    // Small reddish spark used for core debris
+    const size = 12;
+    const c = this.createOffscreen(size, size);
+    if (!c) { this.coreDebrisSprite = null; return; }
+    const g = c.getContext('2d');
+    g.save();
+    g.scale(this.dpr, this.dpr);
+    const s = size;
+    const cx = s / 2, cy = s / 2, r = s * 0.45;
+    const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0.0, 'rgba(255,100,80,1)');
+    grad.addColorStop(0.5, 'rgba(255,80,60,0.45)');
+    grad.addColorStop(1.0, 'rgba(255,80,60,0)');
+    g.globalCompositeOperation = 'lighter';
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
+    g.restore();
+    this.coreDebrisSprite = c;
+  }
+
   isDefeated() { return this.defeated; }
 
   turretPositions() {
-    return this.turrets.map(t => ({
-      x: this.x + Math.cos(this.rotate + t.angle) * (this.hullRadius - 10),
-      y: this.y + Math.sin(this.rotate + t.angle) * (this.hullRadius - 10),
-      radius: t.radius,
-      ref: t,
-    }));
+    // Apply subtle bob and wobble to placement
+    const tFrame = (this.deps && typeof this.deps.getFrameCount === 'function') ? this.deps.getFrameCount() : 0;
+    return this.turrets.map(t => {
+      const rBase = this.hullRadius - 10;
+      const r = rBase + Math.sin(tFrame * 0.03 + (t.bobPhase || 0)) * (t.bobAmp || 3);
+      const local = this.rotate + t.angle + Math.sin(tFrame * 0.007 + (t.bobPhase || 0)) * (t.wobbleAmp || 0.06);
+      return {
+        x: this.x + Math.cos(local) * r,
+        y: this.y + Math.sin(local) * r,
+        radius: t.radius,
+        ref: t,
+      };
+    });
   }
 
   pickNewTarget() {
@@ -393,6 +465,12 @@ export class DreadshipBoss {
         this.laserActiveTimer = 96;
         const aim = Math.atan2(player.y - this.y, player.x - this.x);
         this.laserAngle = aim - Math.PI * 0.7;
+        // Overlay: subtle heat-haze ripple at laser fire
+        try {
+          if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.pulseDistort) {
+            window.glRenderer.pulseDistort(0.5);
+          }
+        } catch (e) {}
       }
     } else {
       if (this.laserCooldown > 0) this.laserCooldown--;
@@ -550,7 +628,8 @@ export class DreadshipBoss {
     }
     // Orbiting rune lights along the hull perimeter (subtle, animated)
     {
-      const rn = Math.max(12, this.runeCount | 0);
+      const rnBase = Math.max(12, this.runeCount | 0);
+      const rn = this.laserWarningTimer > 0 ? Math.round(rnBase * 1.4) : rnBase;
       const rx = this.hullRadius - 8;
       const ry = this.hullRadius * 0.6 - 6;
       for (let i = 0; i < rn; i++) {
@@ -559,15 +638,55 @@ export class DreadshipBoss {
         const py = Math.sin(ang) * ry;
         ctx.save();
         ctx.shadowBlur = 8;
-        ctx.shadowColor = '#0ef';
-        ctx.fillStyle = '#0ef';
-        ctx.globalAlpha = 0.35 + 0.35 * Math.sin(t * 0.1 + i);
+        const glow = this.laserWarningTimer > 0 ? '#4ff' : '#0ef';
+        ctx.shadowColor = glow;
+        ctx.fillStyle = glow;
+        const baseAlpha = 0.35 + 0.35 * Math.sin(t * 0.1 + i);
+        ctx.globalAlpha = this.laserWarningTimer > 0 ? Math.min(1, baseAlpha * 1.4) : baseAlpha;
         ctx.beginPath(); ctx.arc(px, py, 1.8, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
       }
     }
     ctx.shadowBlur = 0; ctx.globalAlpha = 1;
     ctx.restore();
+
+    // Pre-fire charge telegraph around core (expanding rings + charge streams)
+    if (this.laserWarningTimer > 0) {
+      const warnT = Math.max(0, Math.min(1, this.laserWarningTimer / 45)); // 1..0
+      const phase = 1 - warnT; // 0..1
+      // Expanding soft rings
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 3; i++) {
+        const k = (i + 1) / 3;
+        const r = this.coreRadius * (1.2 + phase * (1.0 + 0.6 * k));
+        ctx.globalAlpha = 0.18 + 0.12 * k;
+        ctx.strokeStyle = '#ffcc66';
+        ctx.shadowColor = '#ffcc66';
+        ctx.shadowBlur = 14 + i * 6;
+        ctx.lineWidth = 4 - i;
+        ctx.beginPath(); ctx.arc(this.x, this.y, r, 0, Math.PI * 2); ctx.stroke();
+      }
+      // Charge streams: short inward lines from hull
+      const n = 8;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + t * 0.02;
+        const rx = this.hullRadius - 6;
+        const ry = this.hullRadius * 0.6 - 4;
+        const sx = this.x + Math.cos(a) * rx;
+        const sy = this.y + Math.sin(a) * ry;
+        const len = 10 + 30 * phase; // longer near fire time
+        const ex = this.x + (sx - this.x) * (1 - len / Math.max(1, Math.hypot(sx - this.x, sy - this.y)));
+        const ey = this.y + (sy - this.y) * (1 - len / Math.max(1, Math.hypot(sx - this.x, sy - this.y)));
+        ctx.globalAlpha = 0.25 + 0.35 * phase;
+        ctx.strokeStyle = '#ffcc66';
+        ctx.shadowColor = '#ffcc66';
+        ctx.shadowBlur = 8;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+      }
+      ctx.restore();
+    }
 
     // Turrets
     for (let pos of this.turretPositions()) {
@@ -864,11 +983,30 @@ export class DreadshipBoss {
 
   onDefeated() {
     if (this.defeated) return;
-    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints, unlockReward } = this.deps;
+    const { createExplosion, powerups, Powerup, enemyBullets, drones, setShake, awardPoints, unlockReward, applyShockwave } = this.deps;
     this.defeated = true;
+    // Overlay: stronger ripple on defeat
+    try {
+      if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.pulseDistort) {
+        window.glRenderer.pulseDistort(0.7);
+      }
+    } catch (e) {}
+    // Extra chromatic rings
+    try {
+      if (typeof window !== 'undefined' && window.glRenderer) {
+        const gl = window.glRenderer;
+        if (gl.spawnChromaticRing) {
+          gl.spawnChromaticRing(this.x, this.y, 60, 3, 1.03, 0.94, 3);
+          gl.spawnChromaticRing(this.x, this.y, 120, 3, 1.02, 0.94, 4);
+        }
+        if (gl.pulseExplosion) gl.pulseExplosion(1.0, this.x, this.y);
+      }
+    } catch (e) {}
     awardPoints && awardPoints(500, this.x, this.y, true); // fixed award only on defeat
-    createExplosion && createExplosion(this.x, this.y, this.hullRadius * 2.6, '#f0f');
+    createExplosion && createExplosion(this.x, this.y, this.hullRadius * 3.2, '#f0f');
     setShake && setShake(28, 9);
+    // Massive shockwave pushback on defeat
+    try { if (applyShockwave) applyShockwave(this.x, this.y, 500, 12); } catch (e) {}
     const drops = 2 + Math.floor(Math.random() * 2);
     for (let i = 0; i < drops; i++) {
       const ang = Math.random() * Math.PI * 2;
@@ -876,11 +1014,10 @@ export class DreadshipBoss {
       const dx = this.x + Math.cos(ang) * dist;
       const dy = this.y + Math.sin(ang) * dist;
       const type = this.pickPowerupType();
-      if (powerups && powerups.length < 4 && Powerup) powerups.push(new Powerup(dx, dy, type));
+      if (powerups && Powerup) powerups.push(new Powerup(dx, dy, type));
     }
-    if (Math.random() < 0.5 && powerups && powerups.length < 4 && Powerup) {
-      powerups.push(new Powerup(this.x, this.y, 'life'));
-    }
+    // Guaranteed +1 life drop regardless of current field cap
+    if (powerups && Powerup) powerups.push(new Powerup(this.x, this.y, 'life'));
     // Clear boss bullets and remaining drones on defeat
     if (enemyBullets) enemyBullets.length = 0;
     if (drones) drones.length = 0;
@@ -901,8 +1038,8 @@ export class DreadshipBoss {
   }
 
   pickPowerupType() {
-    const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone'];
-    const weights = [20, 30, 20, 20, 15, 10, 10, 10];
+    const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'durable'];
+    const weights = [20, 30, 20, 20, 15, 10, 10, 10, 10];
     const total = weights.reduce((a, b) => a + b, 0);
     let r = Math.random() * total;
     for (let i = 0; i < types.length; i++) {
