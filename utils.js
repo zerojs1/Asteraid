@@ -77,6 +77,8 @@ export function createExplosion(x, y, radius, color, profile = 'default', Partic
       );
       p.glow = 12;
       p.radius *= 1.12;
+      // Disable wrap for culling when offscreen (moving dots only)
+      p.noWrap = true;
       particles.push(p);
     }
     // Single tiny ring (reduced another 50% in size)
@@ -105,6 +107,8 @@ export function createExplosion(x, y, radius, color, profile = 'default', Partic
     // Brighten dots
     p.glow = 22;
     p.radius *= 1.15;
+    // Disable wrap so we can cheaply cull offscreen particles
+    p.noWrap = true;
     particles.push(p);
   }
   // Shock ring
@@ -141,6 +145,8 @@ export function createExplosion(x, y, radius, color, profile = 'default', Partic
     sh.length = 10 + Math.random() * 12;
     sh.glow = 18;
     sh.thickness = 2.2;
+    // Disable wrap so shards get culled when offscreen
+    sh.noWrap = true;
     particles.push(sh);
   }
 }

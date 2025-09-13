@@ -832,7 +832,7 @@ export class CrystalTitanBoss {
           {
             // Always spawn 1, plus a probability for a 2nd based on beam length (preserves look for long beams)
             const len = Math.hypot(this.beam.ex - this.beam.sx, this.beam.ey - this.beam.sy);
-            const CAP = 90; // safety cap to avoid spikes
+            const CAP = 60; // safety cap to avoid spikes (reduced for performance)
             const spawnOne = () => {
               if (this.beamParticles.length >= CAP) return;
               const tpos = Math.random();
@@ -1137,8 +1137,8 @@ export class CrystalTitanBoss {
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = pass === 0 ? 6 : 2;
         ctx.shadowColor = '#ffffff';
-        ctx.shadowBlur = pass === 0 ? 24 : 12;
-        ctx.globalAlpha = pass === 0 ? 0.35 : 0.85;
+        ctx.shadowBlur = pass === 0 ? 14 : 6; // reduced blur for performance
+        ctx.globalAlpha = pass === 0 ? 0.32 : 0.82;
         ctx.beginPath();
         for (let i = 0; i < positions.length; i++) {
           const A = positions[i];
