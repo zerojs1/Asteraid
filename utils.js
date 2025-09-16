@@ -92,6 +92,35 @@ export function createExplosion(x, y, radius, color, profile = 'default', Partic
     return;
   }
 
+  // 'ringsOnly' profile: spawn only chromatic rings (no dots or shards)
+  if (profile === 'ringsOnly') {
+    // Shock ring
+    const ring = new ParticleClass(x, y, 0, 0, color, 14);
+    ring.shape = 'ring';
+    ring.radius = Math.max(6, radius * 0.25);
+    ring.growth = Math.max(3, radius * 0.06);
+    ring.thickness = 3.0;
+    ring.glow = 24;
+    particles.push(ring);
+    // Echo shimmer rings
+    const ringEcho1 = new ParticleClass(x, y, 0, 0, color, 12);
+    ringEcho1.shape = 'ring';
+    ringEcho1.radius = Math.max(4, radius * 0.15);
+    ringEcho1.growth = Math.max(2, radius * 0.05);
+    ringEcho1.thickness = 1.8;
+    ringEcho1.glow = 18;
+    particles.push(ringEcho1);
+
+    const ringEcho2 = new ParticleClass(x, y, 0, 0, color, 16);
+    ringEcho2.shape = 'ring';
+    ringEcho2.radius = Math.max(8, radius * 0.35);
+    ringEcho2.growth = Math.max(2, radius * 0.04);
+    ringEcho2.thickness = 1.6;
+    ringEcho2.glow = 16;
+    particles.push(ringEcho2);
+    return;
+  }
+
   const count = profile === 'burst' ? 160 : 120; // modestly increase particle density
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;

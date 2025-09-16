@@ -13,6 +13,9 @@
             padding: 0;
             box-sizing: border-box;
         }
+
+        
+
         /* Launch overlay to unlock audio */
         #launchOverlay.menu-screen {
             position: fixed;
@@ -689,6 +692,8 @@
     <!-- WebGL libraries (local copies for offline/NW.js builds) -->
     <script src="vendor/pixi.min.js"></script>
     <script src="vendor/pixi-filters.min.js"></script>
+    <!-- Tone.js for procedural SFX (loaded as UMD global 'Tone') -->
+    <script src="vendor/Tone.min.js"></script>
 </head>
 <body>
     <div id="gameContainer">
@@ -807,13 +812,15 @@
                     <div class="stat-label" style="margin-bottom:6px;">SETTINGS</div>
                     <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-top:6px;">
                         <button id="webglToggleBtn" class="menu-button" onclick="toggleWebGLSetting()">OpenGL: ON</button>
-                        <button id="colorGradeToggleBtn" class="menu-button" onclick="toggleColorGrade()">COLOUR GRADING: OFF</button>
-                        <button id="perfToggleBtn" class="menu-button" onclick="togglePerfStats()">Framerate: ON</button>
+                        <button id="bloomToggleBtn" class="menu-button" onclick="toggleBloom()">Bloom: ON</button>
+                        <button id="colorGradeToggleBtn" class="menu-button" onclick="toggleColorGrade()">COLOUR GRADING: ON</button>
+                        
                     </div>
                     <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-top:8px;">
+                        <button id="crtToggleBtn" class="menu-button" onclick="toggleCRT()">CRT effect: ON</button>
                         <button id="fxaaToggleBtn" class="menu-button" onclick="toggleFXAA()">FXAA: OFF</button>
-                        <button id="bloomToggleBtn" class="menu-button" onclick="toggleBloom()">Bloom: ON</button>
-                        <button id="crtToggleBtn" class="menu-button" onclick="toggleCRT()">CRT: ON</button>
+                        
+                        <button id="perfToggleBtn" class="menu-button" onclick="togglePerfStats()">Framerate: OFF</button>
                     </div>
                     <!-- Controls remapping (above volume sliders) -->
                     <div id="controlsBindingPanel" class="summary-box" style="margin-top:12px;">
@@ -907,6 +914,7 @@
         import { TETHER_PAIR_COUNT, TETHER_POINTS_ON_BREAK } from './constants.js';
         import { AudioManager } from './audioManager.js';
         import { WarpSequence } from './warpSequence.js';
+        import { ToneSFX } from './toneSfx.js';
         //import { WarpTunnel } from './effects.js';
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
@@ -975,6 +983,79 @@
         window.preferredTrailId = 'auto';
         // Initialize audio manager (procedural SFX, unlocks on user gesture)
         const audio = new AudioManager();
+        // Initialize Tone.js SFX layer (optional, unlocks on gesture automatically)
+        let toneSfx = null;
+        try { toneSfx = new ToneSFX(); } catch (e) { toneSfx = null; }
+        // Bridge: wrap audio.playSfx and select helpers to also trigger Tone-based SFX when available
+        try {
+            const origPlaySfx = audio.playSfx.bind(audio);
+            audio.playSfx = (name, opts) => {
+                try { origPlaySfx(name, opts); } catch (e) {}
+                try { if (toneSfx && toneSfx.play) toneSfx.play(name, opts || {}); } catch (e) {}
+            };
+            // Common helper wrappers
+            if (typeof audio.playLevelUp === 'function') {
+                const _orig = audio.playLevelUp.bind(audio);
+                audio.playLevelUp = (...args) => { try { _orig(...args); } catch (e) {} try { toneSfx && toneSfx.play('levelup'); } catch (e) {} };
+            }
+            if (typeof audio.playPickup === 'function') {
+                const _orig = audio.playPickup.bind(audio);
+                audio.playPickup = (...args) => { try { _orig(...args); } catch (e) {} try { toneSfx && toneSfx.play('ui_click'); } catch (e) {} };
+            }
+        } catch (e) {}
+
+        // UI SFX: hover (move) and click for menu buttons/selects
+        function attachUiSfx() {
+            try {
+                document.addEventListener('mouseover', (ev) => {
+                    const el = ev.target && ev.target.closest ? ev.target.closest('.menu-button, .menu-select') : null;
+                    if (el) { try { audio.playSfx('ui_move'); } catch (e) {} }
+                }, { passive: true });
+                document.addEventListener('click', (ev) => {
+                    const el = ev.target && ev.target.closest ? ev.target.closest('.menu-button, .menu-select') : null;
+                    if (el) { try { audio.playSfx('ui_click'); } catch (e) {} }
+                }, { passive: true });
+            } catch (e) {}
+        }
+
+        // Apply Rainbow Detonation damage once as an area-of-effect
+        function applyRainbowDetonationOneShot(cx, cy, R) {
+            // Asteroids: apply one hit to any asteroid whose center is within R + radius
+            const toAdd = [];
+            asteroids = asteroids.filter(asteroid => {
+                const dx = asteroid.x - cx;
+                const dy = asteroid.y - cy;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < R + asteroid.radius) {
+                    const newAsteroids = asteroid.hit(asteroidDeps(), cx, cy);
+                    // Off-screen replacement for fully destroyed small normal
+                    maybeSpawnReplacement(asteroid, newAsteroids);
+                    if (newAsteroids) toAdd.push(...newAsteroids);
+                    return false; // consumed/replaced
+                }
+                return true;
+            });
+            if (toAdd.length) asteroids.push(...toAdd);
+            // Boss parts: single explosion hit with full radius
+            if (bossActive && boss && typeof boss.hitByExplosion === 'function') {
+                try { boss.hitByExplosion(cx, cy, R); } catch (e) {}
+            }
+            // Mines: detonate enemy mines caught in the blast
+            if (mines && mines.length) {
+                const toKeep = [];
+                for (let i = 0; i < mines.length; i++) {
+                    const m = mines[i];
+                    const dx = m.x - cx, dy = m.y - cy;
+                    if (Math.hypot(dx, dy) < R + (m.radius || 12)) {
+                        try { detonateMine && detonateMine(m); } catch (e) {}
+                    } else {
+                        toKeep.push(m);
+                    }
+                }
+                mines = toKeep;
+            }
+        }
+        attachUiSfx();
         // Intro music element and WebAudio routing
         let introAudioEl = null;
         let introMediaSrc = null;
@@ -1119,6 +1200,7 @@
                 const sfx = (sv !== null && sv !== '') ? Math.max(0, Math.min(1, parseFloat(sv))) : (audio && typeof audio.sfxVolume === 'number' ? audio.sfxVolume : 0.8);
                 const mus = (mv !== null && mv !== '') ? Math.max(0, Math.min(1, parseFloat(mv))) : (audio && typeof audio.musicVolume === 'number' ? audio.musicVolume : 0.6);
                 try { audio.setSfxVolume(sfx); } catch (e) {}
+                try { if (toneSfx && toneSfx.setNormalizedVolume) toneSfx.setNormalizedVolume(sfx); } catch (e) {}
                 try { audio.setMusicVolume(mus); } catch (e) {}
             } catch (e) {}
             // Keep sliders in sync with the applied values
@@ -1535,7 +1617,7 @@
                     try { localStorage.setItem('asteraidSetting_sfxVolume', sv); } catch (e) {}
                 }
                 const sf = parseFloat(sv);
-                if (!isNaN(sf)) { try { audio.setSfxVolume(Math.max(0, Math.min(1, sf))); } catch (e) {} }
+                if (!isNaN(sf)) { try { audio.setSfxVolume(Math.max(0, Math.min(1, sf))); } catch (e) {} try { toneSfx && toneSfx.setNormalizedVolume && toneSfx.setNormalizedVolume(Math.max(0, Math.min(1, sf))); } catch (e) {} }
                 // Music volume (0..1). Default 0 on first load
                 let mus = localStorage.getItem('asteraidSetting_musicVolume');
                 if (mus === null || mus === undefined || mus === '') {
@@ -1568,6 +1650,7 @@
         function onSfxVolumeSliderInput(val) {
             const v = Math.max(0, Math.min(100, parseInt(val, 10) || 0)) / 100;
             try { audio.setSfxVolume(v); } catch (e) {}
+            try { if (toneSfx && toneSfx.setNormalizedVolume) toneSfx.setNormalizedVolume(v); } catch (e) {}
             try { localStorage.setItem('asteraidSetting_sfxVolume', String(v)); } catch (e) {}
             const sfxVal = document.getElementById('sfxVolumeValue');
             if (sfxVal) sfxVal.textContent = Math.round(v * 100) + '%';
@@ -2392,6 +2475,22 @@
                 composite.addChild(sourceSprite);
                 composite.addChild(glowLayer);
 
+                // Fast above-ship particle container (WebGL). Falls back to Container if ParticleContainer unsupported.
+                let particlesAboveContainer;
+                try {
+                    particlesAboveContainer = new PIXI.ParticleContainer(4000, {
+                        scale: true,
+                        position: true,
+                        rotation: false,
+                        uvs: false,
+                        alpha: true,
+                    });
+                } catch (e) {
+                    particlesAboveContainer = new PIXI.Container();
+                }
+                particlesAboveContainer.blendMode = PIXI.BLEND_MODES.ADD;
+                composite.addChild(particlesAboveContainer);
+
                 // Output sprite shown on stage with post-processing filters
                 const outputSprite = new PIXI.Sprite(rtA);
                 outputSprite.x = 0; outputSprite.y = 0;
@@ -2554,8 +2653,7 @@
                     // 'slot': triad dots in a staggered pattern
                     const w = (type === 'slot') ? 6 : 6;
                     const h = (type === 'slot') ? 6 : 2;
-                    const cv = document.createElement('canvas');
-                    cv.width = w; cv.height = h;
+                    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
                     const c = cv.getContext('2d');
                     const img = c.createImageData(w, h);
                     const px = img.data;
@@ -2637,6 +2735,64 @@
                 rebuildFilterChain();
 
                 app.stage.addChild(outputSprite);
+                
+                // --- Above-ship particle textures, pool, and helpers (Pixi) ---
+                // Use white base textures + tint for fast batching
+                function makeDotBaseTexture() {
+                    const s = 32, r = 12;
+                    const cv = document.createElement('canvas'); cv.width = s; cv.height = s;
+                    const c = cv.getContext('2d');
+                    c.fillStyle = '#ffffff'; c.shadowColor = '#ffffff'; c.shadowBlur = 10;
+                    c.beginPath(); c.arc(s/2, s/2, r, 0, Math.PI*2); c.fill();
+                    return PIXI.Texture.from(cv);
+                }
+                function makeShardBaseTexture() {
+                    const w = 48, h = 6;
+                    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+                    const c = cv.getContext('2d');
+                    c.strokeStyle = '#ffffff'; c.lineWidth = 4; c.shadowColor = '#ffffff'; c.shadowBlur = 10;
+                    c.lineCap = 'round';
+                    c.beginPath(); c.moveTo(6, h/2); c.lineTo(w-6, h/2); c.stroke();
+                    return PIXI.Texture.from(cv);
+                }
+                function makeDiamondBaseTexture() {
+                    const s = 28; // square canvas
+                    const cv = document.createElement('canvas'); cv.width = s; cv.height = s;
+                    const c = cv.getContext('2d');
+                    c.fillStyle = '#ffffff'; c.shadowColor = '#ffffff'; c.shadowBlur = 8;
+                    c.translate(s/2, s/2);
+                    c.rotate(Math.PI / 4); // diamond orientation baked-in
+                    const r = 8;
+                    c.beginPath();
+                    c.moveTo(0, -r);
+                    c.lineTo(r, 0);
+                    c.lineTo(0, r);
+                    c.lineTo(-r, 0);
+                    c.closePath();
+                    c.fill();
+                    return PIXI.Texture.from(cv);
+                }
+                const DOT_TEX = makeDotBaseTexture();
+                const SHARD_TEX = makeShardBaseTexture();
+                const DIAMOND_TEX = makeDiamondBaseTexture();
+
+                const aboveActive = [];
+                const abovePool = [];
+                function acquireAboveSprite(kind) {
+                    let s = abovePool.pop();
+                    if (!s) s = new PIXI.Sprite(kind === 'dot' ? DOT_TEX : SHARD_TEX);
+                    s.anchor.set(0.5);
+                    s.blendMode = PIXI.BLEND_MODES.ADD;
+                    s.rotation = 0; // rotation disabled for perf; user confirmed it's non-critical
+                    s.visible = true;
+                    particlesAboveContainer.addChild(s);
+                    return s;
+                }
+                function releaseAboveSprite(s) {
+                    try { particlesAboveContainer.removeChild(s); } catch (e) {}
+                    s.visible = false;
+                    abovePool.push(s);
+                }
                 // Build initial phosphor mask (disabled by default)
                 rebuildPhosphorMask();
 
@@ -2702,6 +2858,26 @@
                     outputSprite,
                     sourceTexture: sourceTexture.baseTexture,
                     filters,
+                    particlesAboveContainer,
+                    // Clear transient overlay state (rings, glows, above-ship sprites)
+                    clearTransient: () => {
+                        try {
+                            for (let i = glowLayer.children.length - 1; i >= 0; i--) {
+                                const g = glowLayer.children[i];
+                                if (g && g._poolType === 'ring') {
+                                    // Return pooled ring sprites to pool
+                                    releaseRingSprite(g);
+                                } else {
+                                    try { glowLayer.removeChild(g); } catch (e) {}
+                                }
+                            }
+                        } catch (e) {}
+                        // Clear above-ship particle sprites (WebGL) and active list
+                        try { if (particlesAboveContainer && particlesAboveContainer.children) particlesAboveContainer.removeChildren(); } catch (e) {}
+                        try { if (aboveActive && aboveActive.length) aboveActive.length = 0; } catch (e) {}
+                        // Reset render target bindings to avoid stale frames
+                        try { outputSprite.texture = rtA; feedbackSprite.texture = rtA; } catch (e) {}
+                    },
                     // Clean up overlay and detach resources
                     destroy: () => {
                         try { window.removeEventListener('resize', resizeOverlay); } catch (e) {}
@@ -2779,6 +2955,26 @@
                             displacement.scale.y = amt;
                         }
 
+                        // Animate WebGL above-ship particles (pooled sprites)
+                        for (let i = aboveActive.length - 1; i >= 0; i--) {
+                            const p = aboveActive[i];
+                            p._life--;
+                            if (p._vx || p._vy) {
+                                p.x += p._vx; p.y += p._vy;
+                                p._vx *= 0.98; p._vy *= 0.98;
+                            }
+                            if (p._growth) {
+                                const s = p.scale.x * p._growth;
+                                p.scale.set(s, s);
+                            }
+                            const a = Math.max(0, p._life / p._maxLife) * (p._alphaBase || 1);
+                            p.alpha = a;
+                            if (p._life <= 0) {
+                                releaseAboveSprite(p);
+                                aboveActive.splice(i, 1);
+                            }
+                        }
+
                         // Composite step: render feedback + new source + glow into rtB, then swap
                         app.renderer.render(composite, { renderTexture: rtB, clear: true });
                         // Swap
@@ -2789,11 +2985,24 @@
                         // Fade and cull glow items (respect per-item growth/fade when provided)
                         for (let i = glowLayer.children.length - 1; i >= 0; i--) {
                             const g = glowLayer.children[i];
-                            const fadeMul = (g._fadeMul != null ? g._fadeMul : 0.90);
                             const growth = (g._growth != null ? g._growth : 1.02);
-                            g.alpha *= fadeMul;
+                            // Growth and optional rotation always apply
                             g.scale.x *= growth; g.scale.y *= growth;
                             if (g._rotSpeed) g.rotation += g._rotSpeed;
+                            // Support per-item hold (no fade) and linear fade windows
+                            if (g._fadeDelayFrames && g._fadeDelayFrames > 0) {
+                                g._fadeDelayFrames--;
+                            } else if (g._linearFadeTotal != null) {
+                                const total = Math.max(1, g._linearFadeTotal | 0);
+                                if (g._linearFadeFramesLeft == null) g._linearFadeFramesLeft = total;
+                                const left = g._linearFadeFramesLeft;
+                                const base = (g._alphaBase != null ? g._alphaBase : 1.0);
+                                g.alpha = Math.max(0, left / total) * base;
+                                g._linearFadeFramesLeft = left - 1;
+                            } else {
+                                const fadeMul = (g._fadeMul != null ? g._fadeMul : 0.90);
+                                g.alpha *= fadeMul;
+                            }
                             if (g.alpha < 0.02) {
                                 if (g._poolType === 'ring') {
                                     releaseRingSprite(g);
@@ -3033,6 +3242,42 @@
                         g.alpha = alpha;
                         glowLayer.addChild(g);
                     },
+                    // Soft radial glow with inner core and outer falloff. Supports hold and linear fade.
+                    spawnSoftGlow: (x, y, opts = {}) => {
+                        if (glowLayer.children.length >= GLOW_ITEM_CAP) return;
+                        const {
+                            color = 0xff66cc,
+                            radius = 20,
+                            innerScale = 0.55,
+                            innerAlpha = 0.9,
+                            outerAlpha = 0.35,
+                            holdFrames = 40,
+                            fadeFrames = 30,
+                            growth = 1.0,
+                        } = opts || {};
+                        // Frustum cull at spawn
+                        const margin = 40;
+                        if (x < -margin || y < -margin || x > canvas.width + margin || y > canvas.height + margin) return;
+                        const g = new PIXI.Graphics();
+                        // Outer soft halo
+                        g.beginFill(color >>> 0, Math.max(0, Math.min(1, outerAlpha)));
+                        g.drawCircle(0, 0, Math.max(1, radius));
+                        g.endFill();
+                        // Inner hot core (slightly whiter by using white tint)
+                        g.beginFill(0xffffff, Math.max(0, Math.min(1, innerAlpha)));
+                        g.drawCircle(0, 0, Math.max(1, radius * Math.max(0.1, Math.min(1.0, innerScale))));
+                        g.endFill();
+                        g.position.set(x, y);
+                        g.blendMode = PIXI.BLEND_MODES.ADD;
+                        // Hold, then linear fade to zero over fadeFrames
+                        g._fadeDelayFrames = Math.max(0, holdFrames | 0);
+                        g._linearFadeTotal = Math.max(1, fadeFrames | 0);
+                        g._linearFadeFramesLeft = g._linearFadeTotal;
+                        g._alphaBase = 1.0;
+                        g._growth = Math.max(0.0, growth);
+                        glowLayer.addChild(g);
+                        return g;
+                    },
                     spawnShockwaveRing: (x, y, color = 0xffffff, radius = 48, thickness = 2, growth = 1.035, fade = 0.935) => {
                         if (glowLayer.children.length >= GLOW_ITEM_CAP) return;
                         const ring = acquireRingSprite(color, thickness);
@@ -3071,6 +3316,36 @@
                         s._fadeMul = fade;
                         s._growth = growth;
                         glowLayer.addChild(s);
+                    },
+                    // Spawn a tinted dot in the above-particles container
+                    spawnAboveDot: (x, y, color = 0xffffff, radius = 6, vx = 0, vy = 0, lifetime = 24, alphaBase = 1.0) => {
+                        const s = acquireAboveSprite('dot');
+                        s.texture = DOT_TEX; s.tint = color >>> 0; s.x = x; s.y = y; s.alpha = alphaBase;
+                        const sc = Math.max(1e-3, radius / 12);
+                        s.scale.set(sc, sc);
+                        s._vx = vx; s._vy = vy; s._life = (lifetime|0); s._maxLife = s._life; s._growth = 0; s._alphaBase = alphaBase;
+                        aboveActive.push(s);
+                        return s;
+                    },
+                    // Spawn an elongated shard-like sprite (non-rotating for perf)
+                    spawnAboveShard: (x, y, color = 0xffffff, length = 18, vx = 0, vy = 0, lifetime = 20, alphaBase = 1.0) => {
+                        const s = acquireAboveSprite('shard');
+                        s.texture = SHARD_TEX; s.tint = color >>> 0; s.x = x; s.y = y; s.alpha = alphaBase;
+                        const sc = Math.max(1e-3, length / 48);
+                        s.scale.set(sc, sc);
+                        s._vx = vx; s._vy = vy; s._life = (lifetime|0); s._maxLife = s._life; s._growth = 0; s._alphaBase = alphaBase;
+                        aboveActive.push(s);
+                        return s;
+                    },
+                    // Spawn a diamond (rotated square baked into texture)
+                    spawnAboveDiamond: (x, y, color = 0xffffff, radius = 3, vx = 0, vy = 0, lifetime = 24, alphaBase = 1.0) => {
+                        const s = acquireAboveSprite('diamond');
+                        s.texture = DIAMOND_TEX; s.tint = color >>> 0; s.x = x; s.y = y; s.alpha = alphaBase;
+                        const sc = Math.max(1e-3, radius / 8);
+                        s.scale.set(sc, sc);
+                        s._vx = vx; s._vy = vy; s._life = (lifetime|0); s._maxLife = s._life; s._growth = 0; s._alphaBase = alphaBase;
+                        aboveActive.push(s);
+                        return s;
                     }
                 };
                 // Compensation: boost brightness/bloom a bit when phosphor mask darkens the image
@@ -3485,6 +3760,7 @@
         let hasUpgradedBomb = false;
         let hasUpgradedLaser = false;
         let hasUpgradedClone = false; // clone pickups grant +1 extra stock when true
+        let hasUpgradedMine = false;  // mine pickups grant +1 extra stock when true
         let shieldRadiusMul = 1; // visual + deflection radius multiplier for shield
         let shieldDurationMul = 1; // duration multiplier for shield active time
         // Normal bullet fire rate control (tap fire only; charged shots unaffected)
@@ -3509,6 +3785,7 @@
             { id: 'up_laser',   name: 'Upgraded Laser',       desc: 'You get +1 extra shot of the laser (max 4).' },
             { id: 'up_shield',  name: 'Upgraded Shield +10%', desc: 'Shield deflection radius increased by 10%.' },
             { id: 'up_clone',   name: 'Clone Logistics +1',  desc: 'You get +1 extra stock of clones (max 3).' },
+            { id: 'up_mine',    name: 'Mines + 1',           desc: 'You get +1 extra stock of mines (max 3).' },
             { id: 'shieldFrames+10%', name: 'Shield Capacitors +10%', desc: 'Shield lasts 10% longer.' },
             { id: 'engineAccel+10%',  name: 'Vector Thrusters +10%',  desc: 'Faster acceleration and turning response.' },
             { id: 'life',   name: '+1 LIFE',               desc: 'Gain an extra life (max 6).' },
@@ -3758,6 +4035,9 @@
                     break;
                 case 'up_clone':
                     hasUpgradedClone = true;
+                    break;
+                case 'up_mine':
+                    hasUpgradedMine = true;
                     break;
                 case 'life':
                     lives = Math.min(6, (lives || 0) + 1); // grant +1 life, cap at 6
@@ -4079,6 +4359,509 @@
             levelMessageText = text;
             levelMessageTimer = frames;
         }
+
+        // Bonus Level: Time Attack state
+        let bonusActive = false;
+        let bonusDecisionPending = false; // set on eligible boss defeat; resolved when bossDefeatFreeze hits 0
+        let bonusTimer = 0; // countdown frames (30s => 1800)
+        let bonusResultTimer = 0; // post result delay (5s)
+        let bonusNextLevel = 0; // level to apply after bonus (captured from pendingLevel)
+        let bonusMain = null; // main bonus asteroid (before split)
+        let bonusChunks = []; // after split, three chunks live here
+        let bonusVariant = 'big'; // 'big' (main+chunks) or 'smalls'
+        let bonusSmalls = []; // for 'smalls' variant
+        let bonusIntroFrames = 0; // suppress timer HUD briefly so the intro message is visible
+        // Centralized reset for all Bonus Level state
+        function resetBonusState() {
+            try {
+                bonusActive = false;
+                bonusDecisionPending = false;
+                bonusTimer = 0;
+                bonusResultTimer = 0;
+                bonusNextLevel = 0;
+                bonusVariant = 'big';
+                bonusIntroFrames = 0;
+                bonusMain = null;
+                if (Array.isArray(bonusChunks)) bonusChunks.length = 0; else bonusChunks = [];
+                if (Array.isArray(bonusSmalls)) bonusSmalls.length = 0; else bonusSmalls = [];
+                // Clear any lingering HUD message related to bonus
+                levelMessageTimer = 0;
+                levelMessageText = '';
+            } catch (e) {}
+        }
+        // Bonus asteroid/chunk helpers
+        function makeBonusMain(cx, cy) {
+            const obj = {
+                type: 'main',
+                x: cx, y: cy,
+                radius: 180, // 40% smaller than previous 300
+                hp: 20, // increased hits required
+                angle: 0,
+                rot: 0.003,
+                alpha: 1,
+                dead: false,
+                // Precompute detailed outer vertices and internal cracks
+                verts: (function() {
+                    // Smoother outline: tighter variance around radius, more points
+                    const n = 28 + ((Math.random() * 6) | 0);
+                    const arr = [];
+                    for (let i = 0; i < n; i++) {
+                        const a = (i / n) * Math.PI * 2;
+                        const variance = 0.92 + Math.random() * 0.16; // 0.92..1.08
+                        arr.push({ a, r: variance });
+                    }
+                    return arr;
+                })(),
+                cracks: (function() {
+                    // Dense static cracks across the interior for a filled look
+                    const c = [];
+                    const lines = 80 + ((Math.random() * 30) | 0);
+                    for (let i = 0; i < lines; i++) {
+                        const a1 = Math.random() * Math.PI * 2;
+                        const a2 = Math.random() * Math.PI * 2;
+                        const r1 = Math.random() * 0.85; // inside
+                        const r2 = Math.random() * 0.85;
+                        c.push({ a1, a2, r1, r2 });
+                    }
+                    return c;
+                })(),
+            };
+            // Cache a high-quality offscreen sprite for performance and smooth visuals
+            obj.sprite = buildBonusSprite(obj.radius, obj.verts, obj.cracks);
+            return obj;
+        }
+        function makeBonusChunk(cx, cy, r, vx, vy) {
+            const o = {
+                type: 'chunk',
+                x: cx, y: cy, radius: r, vx, vy,
+                hp: 10, angle: Math.random() * Math.PI * 2,
+                rot: (Math.random() - 0.5) * 0.02,
+                alpha: 1,
+                dead: false,
+                verts: (function() {
+                    const n = 20 + ((Math.random() * 6) | 0);
+                    const arr = [];
+                    for (let i = 0; i < n; i++) {
+                        const a = (i / n) * Math.PI * 2;
+                        const variance = 0.92 + Math.random() * 0.16; // smoother outline
+                        arr.push({ a, r: variance });
+                    }
+                    return arr;
+                })(),
+                cracks: (function() {
+                    const c = [];
+                    const lines = 40 + ((Math.random() * 20) | 0);
+                    for (let i = 0; i < lines; i++) {
+                        const a1 = Math.random() * Math.PI * 2;
+                        const a2 = Math.random() * Math.PI * 2;
+                        const r1 = Math.random() * 0.85;
+                        const r2 = Math.random() * 0.85;
+                        c.push({ a1, a2, r1, r2 });
+                    }
+                    return c;
+                })(),
+            };
+            o.sprite = buildBonusSprite(o.radius, o.verts, o.cracks);
+            return o;
+        }
+        function makeBonusSmall(cx, cy, r = 20, rotDir = 1) {
+            const o = {
+                type: 'small',
+                x: cx, y: cy, radius: r,
+                hp: 1, angle: Math.random() * Math.PI * 2,
+                rot: (rotDir >= 0 ? 1 : -1) * (0.02 + Math.random() * 0.02),
+                alpha: 1,
+                dead: false,
+                verts: (function() {
+                    const n = 18 + ((Math.random() * 6) | 0);
+                    const arr = [];
+                    for (let i = 0; i < n; i++) {
+                        const a = (i / n) * Math.PI * 2;
+                        const variance = 0.92 + Math.random() * 0.16; // smoother outline
+                        arr.push({ a, r: variance });
+                    }
+                    return arr;
+                })(),
+                cracks: (function() {
+                    const c = [];
+                    const lines = 28 + ((Math.random() * 12) | 0);
+                    for (let i = 0; i < lines; i++) {
+                        const a1 = Math.random() * Math.PI * 2;
+                        const a2 = Math.random() * Math.PI * 2;
+                        const r1 = Math.random() * 0.85;
+                        const r2 = Math.random() * 0.85;
+                        c.push({ a1, a2, r1, r2 });
+                    }
+                    return c;
+                })(),
+            };
+            o.sprite = buildBonusSprite(o.radius, o.verts, o.cracks);
+            return o;
+        }
+        function drawBonusObject(ctx, o) {
+            if (!o || !o.sprite) return;
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, Math.min(1, o.alpha || 1));
+            ctx.translate(o.x, o.y);
+            ctx.rotate(o.angle || 0);
+            // Draw cached sprite centered
+            const img = o.sprite;
+            ctx.drawImage(img, -img.width * 0.5 / (img._dpr || 1), -img.height * 0.5 / (img._dpr || 1), img.width / (img._dpr || 1), img.height / (img._dpr || 1));
+            ctx.restore();
+        }
+        function buildBonusSprite(radius, verts, cracks) {
+            try {
+                const dpr = (window.devicePixelRatio || 1);
+                const glow = Math.max(40, Math.floor(radius * 0.4)); // heavy long-radius glow
+                const size = Math.ceil((radius + glow + 6) * 2);
+                const c = document.createElement('canvas');
+                c.width = Math.ceil(size * dpr);
+                c.height = Math.ceil(size * dpr);
+                c._dpr = dpr;
+                const g = c.getContext('2d');
+                g.save();
+                g.scale(dpr, dpr);
+                g.translate(size * 0.5, size * 0.5);
+                // Build smooth outline path using quadratic curves
+                const pts = verts.map(v => ({ x: Math.cos(v.a) * radius * v.r, y: Math.sin(v.a) * radius * v.r }));
+                g.strokeStyle = '#ffffff';
+                g.lineJoin = 'round';
+                g.lineCap = 'round';
+                // Outer glow stroke
+                g.save();
+                g.shadowColor = '#ffffff';
+                g.shadowBlur = glow;
+                g.globalAlpha = 0.85;
+                g.lineWidth = 3;
+                g.beginPath();
+                for (let i = 0; i < pts.length; i++) {
+                    const p0 = pts[i];
+                    const p1 = pts[(i + 1) % pts.length];
+                    const mid = { x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5 };
+                    if (i === 0) g.moveTo(mid.x, mid.y);
+                    g.quadraticCurveTo(p1.x, p1.y, mid.x, mid.y);
+                }
+                g.closePath();
+                g.stroke();
+                g.restore();
+                // Core outline stroke (sharp)
+                g.globalAlpha = 1;
+                g.lineWidth = 2;
+                g.beginPath();
+                for (let i = 0; i < pts.length; i++) {
+                    const p0 = pts[i];
+                    const p1 = pts[(i + 1) % pts.length];
+                    const mid = { x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5 };
+                    if (i === 0) g.moveTo(mid.x, mid.y);
+                    g.quadraticCurveTo(p1.x, p1.y, mid.x, mid.y);
+                }
+                g.closePath();
+                g.stroke();
+                // Interior dense cracks (static)
+                g.strokeStyle = '#bbddff';
+                g.globalAlpha = 0.35;
+                g.lineWidth = 1;
+                for (let i = 0; i < cracks.length; i++) {
+                    const cr = cracks[i];
+                    // start/end points inside the outline
+                    const sx = Math.cos(cr.a1) * radius * cr.r1;
+                    const sy = Math.sin(cr.a1) * radius * cr.r1;
+                    const ex = Math.cos(cr.a2) * radius * cr.r2;
+                    const ey = Math.sin(cr.a2) * radius * cr.r2;
+                    g.beginPath();
+                    g.moveTo(sx, sy);
+                    // slight bend for natural look
+                    const cx = (sx + ex) * 0.5 + (Math.random() - 0.5) * (radius * 0.08);
+                    const cy = (sy + ey) * 0.5 + (Math.random() - 0.5) * (radius * 0.08);
+                    g.quadraticCurveTo(cx, cy, ex, ey);
+                    g.stroke();
+                }
+                g.restore();
+                return c;
+            } catch (e) { return null; }
+        }
+        function updateBonusObjects(canvas) {
+            if (bonusMain) {
+                bonusMain.angle += bonusMain.rot;
+                if (bonusMain.dead) {
+                    bonusMain.alpha -= 0.05;
+                    if (bonusMain.alpha <= 0) bonusMain = null;
+                }
+            }
+            if (bonusChunks && bonusChunks.length) {
+                for (let i = bonusChunks.length - 1; i >= 0; i--) {
+                    const c = bonusChunks[i];
+                    c.x += c.vx || 0; c.y += c.vy || 0;
+                    c.angle += c.rot || 0;
+                    // Wrap
+                    if (c.x < -c.radius) c.x = canvas.width + c.radius;
+                    if (c.x > canvas.width + c.radius) c.x = -c.radius;
+                    if (c.y < -c.radius) c.y = canvas.height + c.radius;
+                    if (c.y > canvas.height + c.radius) c.y = -c.radius;
+                    if (c.dead) {
+                        c.alpha -= 0.05;
+                        if (c.alpha <= 0) bonusChunks.splice(i, 1);
+                    }
+                }
+            }
+            if (bonusSmalls && bonusSmalls.length) {
+                for (let i = bonusSmalls.length - 1; i >= 0; i--) {
+                    const s = bonusSmalls[i];
+                    s.angle += s.rot || 0;
+                    if (s.dead) {
+                        s.alpha -= 0.06;
+                        if (s.alpha <= 0) bonusSmalls.splice(i, 1);
+                    }
+                }
+            }
+        }
+        function drawBonusObjects(ctx) {
+            if (bonusMain) drawBonusObject(ctx, bonusMain);
+            if (bonusChunks && bonusChunks.length) {
+                for (let i = 0; i < bonusChunks.length; i++) drawBonusObject(ctx, bonusChunks[i]);
+            }
+            if (bonusSmalls && bonusSmalls.length) {
+                for (let i = 0; i < bonusSmalls.length; i++) drawBonusObject(ctx, bonusSmalls[i]);
+            }
+        }
+        function bonusHitAt(x, y) {
+            // One damage instance from a point impact (bullet/particle)
+            const onHitFX = (hx, hy) => {
+                try { createExplosion(hx, hy, 4, '#ccf', 'micro'); } catch (e) {}
+                try { if (glRenderer && glRenderer.spawnChromaticRing) glRenderer.spawnChromaticRing(hx, hy, 24, 2, 1.03, 0.94, 2); } catch (e) {}
+            };
+            if (bonusMain) {
+                const dx = x - bonusMain.x, dy = y - bonusMain.y;
+                if (Math.hypot(dx, dy) < bonusMain.radius) {
+                    bonusMain.hp -= 1;
+                    onHitFX(x, y);
+                    // Screen shake on large bonus asteroid hit
+                    try {
+                        shakeFrames = Math.max(shakeFrames, 6);
+                        shakeIntensity = Math.max(shakeIntensity, 2.0);
+                    } catch (e) {}
+                    if (bonusMain.hp <= 0) {
+                        // Split into 3 chunks
+                        const baseR = Math.max(40, Math.floor(bonusMain.radius / 3));
+                        bonusChunks = [];
+                        for (let i = 0; i < 3; i++) {
+                            const ang = (i / 3) * Math.PI * 2 + Math.random() * 0.3;
+                            const dist = baseR * 0.8;
+                            const cx = bonusMain.x + Math.cos(ang) * dist;
+                            const cy = bonusMain.y + Math.sin(ang) * dist;
+                            const sp = 0.8 + Math.random() * 0.6;
+                            bonusChunks.push(makeBonusChunk(cx, cy, baseR, Math.cos(ang) * sp, Math.sin(ang) * sp));
+                        }
+                        bonusMain = null;
+                    }
+                    return true;
+                }
+            }
+            // Chunks
+            for (let i = 0; i < bonusChunks.length; i++) {
+                const c = bonusChunks[i];
+                const dx = x - c.x, dy = y - c.y;
+                if (Math.hypot(dx, dy) < c.radius) {
+                    c.hp -= 1;
+                    onHitFX(x, y);
+                    if (c.hp <= 0) {
+                        // Chance to drop a non-life powerup
+                        try {
+                            if (canPushPowerup && canPushPowerup()) {
+                                if (Math.random() < 0.3) {
+                                    const types = ['bomb','shield','teleport','flak','rainbow','invisible','laser','clone','orbital','armor','durable','mine'];
+                                    const t = types[(Math.random() * types.length) | 0];
+                                    pushPowerup(c.x, c.y, t);
+                                }
+                            }
+                        } catch (e) {}
+                        // Fade out and remove in update
+                        c.dead = true;
+                        // Small breakup pop
+                        try { createExplosion(c.x, c.y, Math.max(24, c.radius * 0.5), '#ccf'); } catch (e) {}
+                        // Medium shockwave and screen shake on chunk destroyed
+                        try { applyShockwave(c.x, c.y, MINE_SHOCKWAVE_RADIUS, MINE_PUSH_STRENGTH); } catch (e) {}
+                        // WebGL rings accent on chunk destruction
+                        try {
+                            if (glRenderer && glRenderer.spawnShockwaveRing) {
+                                glRenderer.spawnShockwaveRing(c.x, c.y, 0xbbddff, 32, 4, 1.045, 0.93);
+                                glRenderer.spawnShockwaveRing(c.x, c.y, 0xbbddff, 48, 3, 1.04, 0.93);
+                            }
+                        } catch (e) {}
+                        try {
+                            shakeFrames = Math.max(shakeFrames, 10);
+                            shakeIntensity = Math.max(shakeIntensity, 2.6);
+                        } catch (e) {}
+                    }
+                    return true;
+                }
+            }
+            // Smalls (one-hit)
+            for (let i = 0; i < bonusSmalls.length; i++) {
+                const s = bonusSmalls[i];
+                const dx = x - s.x, dy = y - s.y;
+                if (Math.hypot(dx, dy) < s.radius && !s.dead) {
+                    s.hp -= 1;
+                    onHitFX(x, y);
+                    if (s.hp <= 0) {
+                        s.dead = true;
+                        // Visuals and feedback: pop + shockwave + rings + shake
+                        try { createExplosion(s.x, s.y, Math.max(18, s.radius * 0.9), '#ccf'); } catch (e) {}
+                        try { applyShockwave(s.x, s.y, MINE_SHOCKWAVE_RADIUS, MINE_PUSH_STRENGTH); } catch (e) {}
+                        try {
+                            if (glRenderer && glRenderer.spawnShockwaveRing) {
+                                glRenderer.spawnShockwaveRing(s.x, s.y, 0xbbddff, 26, 4, 1.05, 0.93);
+                                glRenderer.spawnShockwaveRing(s.x, s.y, 0xbbddff, 40, 3, 1.04, 0.93);
+                            }
+                        } catch (e) {}
+                        try {
+                            shakeFrames = Math.max(shakeFrames, 8);
+                            shakeIntensity = Math.max(shakeIntensity, 2.2);
+                        } catch (e) {}
+                        // Powerup drop chance
+                        try {
+                            if (canPushPowerup && canPushPowerup()) {
+                                if (Math.random() < 0.2) {
+                                    const types = ['bomb','shield','teleport','flak','rainbow','invisible','laser','clone','orbital','armor','durable','mine'];
+                                    const t = types[(Math.random() * types.length) | 0];
+                                    pushPowerup(s.x, s.y, t);
+                                }
+                            }
+                        } catch (e) {}
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+        function bonusHitByExplosion(cx, cy, rad) {
+            // Apply one damage if center within radius intersects any bonus piece
+            const tryPoint = (px, py) => bonusHitAt(px, py);
+            // Sample center and a few points along the ring
+            tryPoint(cx, cy);
+            for (let i = 0; i < 6; i++) {
+                const a = (i / 6) * Math.PI * 2;
+                tryPoint(cx + Math.cos(a) * (rad * 0.5), cy + Math.sin(a) * (rad * 0.5));
+            }
+        }
+        function bonusHitByLaserLine(x1, y1, x2, y2) {
+            // If laser line intersects circle, apply one hit at nearest point to center
+            const applyFor = (o) => {
+                if (!o) return false;
+                try {
+                    if (!lineCircleCollision) return false;
+                    const hit = lineCircleCollision(x1, y1, x2, y2, o.x, o.y, o.radius);
+                    if (hit) {
+                        // choose midpoint for FX
+                        const hx = (x1 + x2) * 0.5, hy = (y1 + y2) * 0.5;
+                        return bonusHitAt(hx, hy);
+                    }
+                } catch (e) {}
+                return false;
+            };
+            if (applyFor(bonusMain)) return true;
+            for (let i = 0; i < bonusChunks.length; i++) { if (applyFor(bonusChunks[i])) return true; }
+            for (let i = 0; i < bonusSmalls.length; i++) { if (applyFor(bonusSmalls[i])) return true; }
+            return false;
+        }
+        function startBonusLevel(variant = 'big') {
+            bonusActive = true;
+            bonusDecisionPending = false;
+            bonusTimer = 1800; // 30s
+            bonusResultTimer = 0;
+            bonusVariant = variant;
+            bonusIntroFrames = 60; // show intro message unobstructed for ~1s
+            // Capture and clear pending next level until bonus completes
+            bonusNextLevel = pendingLevel || (level + 1);
+            pendingLevel = 0;
+            // Clear field: asteroids, phased, bullets (enemy), drones, powerups, hazards
+            try { if (asteroids && asteroids.length) asteroids.length = 0; } catch (e) {}
+            try { if (phasedAsteroids && phasedAsteroids.length) phasedAsteroids.length = 0; } catch (e) {}
+            try { if (enemyBullets && enemyBullets.length) enemyBullets.length = 0; } catch (e) {}
+            try { if (drones && drones.length) drones.length = 0; } catch (e) {}
+            try { if (cloneDrones && cloneDrones.length) cloneDrones.length = 0; } catch (e) {}
+            try { if (powerups && powerups.length) powerups.length = 0; } catch (e) {}
+            try { if (gravityWells && gravityWells.length) gravityWells.length = 0; } catch (e) {}
+            try { if (wormholes && wormholes.length) wormholes.length = 0; } catch (e) {}
+            try { if (tetherPairs && tetherPairs.length) tetherPairs.length = 0; } catch (e) {}
+            try { if (warpTunnels && warpTunnels.length) warpTunnels.length = 0; } catch (e) {}
+            try { blackHole = null; } catch (e) {}
+            const cx = canvas.width * 0.5, cy = canvas.height * 0.5;
+            bonusSmalls = [];
+            if (variant === 'big') {
+                // Spawn massive asteroid in center
+                bonusMain = makeBonusMain(cx, cy);
+                bonusChunks = [];
+                // Pushback shockwave to keep player from immediate contact
+                try {
+                    applyShockwave(cx, cy, MINE_SHOCKWAVE_RADIUS, MINE_PUSH_STRENGTH, { visualScale: 1.1 });
+                    // Brief invulnerability buffer
+                    player.invulnerable = Math.max(player.invulnerable, 90);
+                } catch (e) {}
+            } else {
+                // Spawn stationary small bonus asteroids around all edges (8 per side)
+                bonusMain = null;
+                bonusChunks = [];
+                const margin = 60;
+                const n = 8;
+                for (let i = 0; i < n; i++) {
+                    const t = (i + 1) / (n + 1);
+                    // Top
+                    bonusSmalls.push(makeBonusSmall(Math.floor(t * canvas.width), margin, 20, Math.random() < 0.5 ? 1 : -1));
+                    // Bottom
+                    bonusSmalls.push(makeBonusSmall(Math.floor(t * canvas.width), canvas.height - margin, 20, Math.random() < 0.5 ? 1 : -1));
+                    // Left
+                    bonusSmalls.push(makeBonusSmall(margin, Math.floor(t * canvas.height), 20, Math.random() < 0.5 ? 1 : -1));
+                    // Right
+                    bonusSmalls.push(makeBonusSmall(canvas.width - margin, Math.floor(t * canvas.height), 20, Math.random() < 0.5 ? 1 : -1));
+                }
+            }
+            // HUD and SFX/FX
+            try { showHUDMessage('BONUS LEVEL: TIME ATTACK!', 180); } catch (e) {}
+            try {
+                if (glRenderer) {
+                    if (glRenderer.spawnChromaticRing) {
+                        glRenderer.spawnChromaticRing(cx, cy, 64, 3, 1.03, 0.94, 3);
+                        glRenderer.spawnChromaticRing(cx, cy, 128, 3, 1.02, 0.94, 4);
+                    }
+                    if (glRenderer.pulseExplosion) glRenderer.pulseExplosion(200, cx, cy);
+                }
+            } catch (e) {}
+        }
+        function finishBonus(success) {
+            bonusResultTimer = 300; // 5s
+            bonusTimer = 0;
+            if (success) {
+                const cx = canvas.width * 0.5, cy = canvas.height * 0.5;
+                // Glitter shockwave + +1 life + EXP
+                try {
+                    if (glRenderer) {
+                        if (glRenderer.pulseExplosion) glRenderer.pulseExplosion(240, cx, cy);
+                        if (glRenderer.spawnChromaticRing) {
+                            glRenderer.spawnChromaticRing(cx, cy, 72, 3, 1.03, 0.94, 3);
+                            glRenderer.spawnChromaticRing(cx, cy, 144, 3, 1.02, 0.94, 4);
+                        }
+                        if (glRenderer.spawnAboveDiamond) {
+                            for (let i = 0; i < 60; i++) {
+                                const a = Math.random() * Math.PI * 2;
+                                const sp = 1 + Math.random() * 2.5;
+                                glRenderer.spawnAboveDiamond(cx, cy, 0xffeeaa, 3, Math.cos(a) * sp, Math.sin(a) * sp, 70 + ((Math.random() * 30) | 0), 1.0);
+                            }
+                        }
+                    }
+                } catch (e) {}
+                // Spawn +1 life at center (ignore field cap)
+                try { powerups.push(new Powerup(cx, cy, 'life')); } catch (e) {}
+                try { addEXP && addEXP(300, 'bonus-complete'); } catch (e) {}
+                try { showHUDMessage('BONUS COMPLETE! +300 EXP', 240); } catch (e) {}
+            } else {
+                try { showHUDMessage('BONUS FAILED!', 240); } catch (e) {}
+                // Fade remaining parts
+                if (bonusMain) bonusMain.dead = true;
+                for (let i = 0; i < bonusChunks.length; i++) bonusChunks[i].dead = true;
+                for (let i = 0; i < bonusSmalls.length; i++) bonusSmalls[i].dead = true;
+            }
+        }
         // Build an offscreen Colossus preview sprite using its own draw() into a neutral pose
         function buildColossusPreviewSprite(size = 512) {
             try {
@@ -4289,6 +5072,7 @@
                 getFrameCount: () => frameCount,
                 addEXP: (amt, src) => addEXP(amt, src),
                 unlockReward: (id) => unlockReward(id),
+                playSfx: (name, opts) => { try { audio.playSfx(name, opts); } catch (e) {} },
             });
             bossActive = true;
             level8Spawned = true;
@@ -5048,8 +5832,46 @@
         let particles = [];
         let particlesAbove = [];
         let rainbowRibbon = [];
+        let rainbowDetonations = [];
         let gauntletRibbon = [];
         let powerups = [];
+
+        // Combo: Rainbow Trail Detonation (triggered on charged release while Rainbow active)
+        function triggerRainbowDetonation(cx, cy) {
+            // Deactivate rainbow and clear ribbon
+            player.rainbow = 0;
+            if (rainbowRibbon && rainbowRibbon.length) rainbowRibbon.length = 0;
+            // Create a detonation record to drive damaging ring spawns for 60f and visual presence up to 120f
+            const det = { x: cx, y: cy, age: 0, maxR: 195 }; // visuals expand to this radius
+            rainbowDetonations.push(det);
+            // Apply one-hit AoE damage immediately (keep visuals expanding only)
+            try { applyRainbowDetonationOneShot(cx, cy, det.maxR); } catch (e) {}
+            // SFX
+            try { audio.playSfx('rainbow'); } catch (e) {}
+            // WebGL overlay: spawn multiple chromatic shockwave rings for a rich rainbow look
+            try {
+                if (glRenderer && glRenderer.spawnShockwaveRing) {
+                    const hues = [0xff4d4d, 0xffa64d, 0xffff4d, 0x4dff4d, 0x4dc3ff, 0xb84dff];
+                    for (let i = 0; i < hues.length; i++) {
+                        const base = 20 + i * 4;
+                        glRenderer.spawnShockwaveRing(cx, cy, hues[i], base, 5, 1.06, 0.92);
+                    }
+                } else {
+                    // Canvas fallback: spawn a handful of growing ring particles in rainbow hues
+                    const hues = ['#ff4d4d', '#ffa64d', '#ffff4d', '#4dff4d', '#4dc3ff', '#b84dff'];
+                    for (let i = 0; i < hues.length; i++) {
+                        const ring = new Particle(cx, cy, 0, 0, hues[i], 60);
+                        ring.shape = 'ring';
+                        ring.radius = 8 + i * 2;
+                        ring.growth = 4.8; // grow over ~1s to large radius
+                        ring.thickness = 3;
+                        ring.glow = 24;
+                        ring.noWrap = true;
+                        particlesAbove.push(ring);
+                    }
+                }
+            } catch (e) {}
+        }
 
         // In-place filter utility to preserve array references
         function filterInPlace(arr, predicate) {
@@ -5068,6 +5890,7 @@
         let blackHole = null;
         let scoreMilestones = [];
         let mines = [];
+        let playerMines = [];
         let stars = [];
         let shootingStars = [];
         let fastShootingStars = [];
@@ -5949,6 +6772,7 @@
             bombCharges: 0,
             laserCharges: 0,
             cloneStock: 0,
+            mineStock: 0,
         };
         
         // Particle moved to particle.js
@@ -7362,6 +8186,37 @@
                 if (rainbowRibbon.length) rainbowRibbon.length = 0;
             }
 
+            // Update Rainbow Detonation rings (expands for 60f, visuals only; damage was applied once on trigger)
+            if (rainbowDetonations && rainbowDetonations.length) {
+                for (let i = rainbowDetonations.length - 1; i >= 0; i--) {
+                    const dtn = rainbowDetonations[i];
+                    dtn.age++;
+                    // Spawn non-damaging particles for visuals during the first second (expand)
+                    if (dtn.age <= 60) {
+                        const t = dtn.age / 60; // 0..1
+                        const r = dtn.maxR * t;
+                        // Spawn a lightweight, culled set of visual particles along the ring (no damage)
+                        const spawn = 8; // keep perf friendly
+                        for (let k = 0; k < spawn; k++) {
+                            const ang = Math.random() * Math.PI * 2;
+                            const px = dtn.x + Math.cos(ang) * r;
+                            const py = dtn.y + Math.sin(ang) * r;
+                            // Cull far offscreen spawns
+                            if (px < -40 || py < -40 || px > canvas.width + 40 || py > canvas.height + 40) continue;
+                            const col = `hsl(${((frameCount * 5 + k * 60) % 360)}, 100%, 55%)`;
+                            const p = new Particle(px, py, Math.cos(ang) * 0.4, Math.sin(ang) * 0.4, col, 18);
+                            // Visual only
+                            p.noWrap = true;
+                            p.glow = 14;
+                            particles.push(p);
+                        }
+                    }
+                    if (dtn.age >= 120) {
+                        rainbowDetonations.splice(i, 1);
+                    }
+                }
+            }
+
             // Maintain Gauntlet cosmetic ribbon path and embers when that trail is equipped
             if (window.activeTrailId === 'trail_gauntlet') {
                 gauntletRibbon.push({ x: player.x, y: player.y });
@@ -7671,41 +8526,65 @@
                         for (let i = 0; i < count; i++) {
                             const a = Math.random() * Math.PI * 2;
                             const speed = 0.8 + Math.random() * 1.4;
-                            const col = progress > 0.85 ? '#fff' : '#ff0';
-                            const p = new Particle(
-                                noseX + Math.cos(a) * 8,
-                                noseY + Math.sin(a) * 8,
-                                -Math.cos(a) * speed,
-                                -Math.sin(a) * speed,
-                                col,
-                                14
-                            );
-                            p.glow = progress > 0.85 ? 22 : 16;
-                            particlesAbove.push(p);
+                            const isBright = progress > 0.85;
+                            if (glRenderer && glRenderer.spawnAboveDot) {
+                                const colNum = isBright ? 0xffffff : 0xffff00;
+                                glRenderer.spawnAboveDot(
+                                    noseX + Math.cos(a) * 8,
+                                    noseY + Math.sin(a) * 8,
+                                    colNum,
+                                    2.0,
+                                    -Math.cos(a) * speed,
+                                    -Math.sin(a) * speed,
+                                    14,
+                                    1.0
+                                );
+                            } else {
+                                const col = isBright ? '#fff' : '#ff0';
+                                const p = new Particle(
+                                    noseX + Math.cos(a) * 8,
+                                    noseY + Math.sin(a) * 8,
+                                    -Math.cos(a) * speed,
+                                    -Math.sin(a) * speed,
+                                    col,
+                                    14
+                                );
+                                p.glow = isBright ? 22 : 16;
+                                particlesAbove.push(p);
+                            }
                         }
                     }
                     
                     // Remove periodic charge tick SFX in favor of continuous charging loop
                     // Pulsing muzzle ring after 0.5s of hold
                     if (spaceHoldTime > 30 && spaceHoldTime % 12 === 0) {
-                        const ring = new Particle(noseX, noseY, 0, 0, '#ff0', 16);
-                        ring.shape = 'ring';
-                        ring.radius = 3 + progress * 4;
-                        ring.growth = 2.6 + progress * 1.4;
-                        ring.thickness = 2;
-                        ring.glow = 18;
-                        particlesAbove.push(ring);
+                        if (glRenderer && glRenderer.spawnShockwaveRing) {
+                            const r = 3 + progress * 4;
+                            glRenderer.spawnShockwaveRing(noseX, noseY, 0xffff00, r, 2, 1.035, 0.935);
+                        } else {
+                            const ring = new Particle(noseX, noseY, 0, 0, '#ff0', 16);
+                            ring.shape = 'ring';
+                            ring.radius = 3 + progress * 4;
+                            ring.growth = 2.6 + progress * 1.4;
+                            ring.thickness = 2;
+                            ring.glow = 18;
+                            particlesAbove.push(ring);
+                        }
                     }
                     // Visual cue at 3s charge (multi-shot ready): quick circular flash/shockwave (visual only)
                     if (spaceHoldTime === 180) {
-                        const flash = new Particle(player.x, player.y, 0, 0, '#fff', 20);
-                        flash.shape = 'ring';
-                        flash.radius = 10; // start small
-                        flash.growth = 6.0; // expand quickly
-                        flash.thickness = 5;
-                        flash.glow = 36;
-                        flash.noWrap = true; // visual burst; don't wrap
-                        particlesAbove.push(flash);
+                        if (glRenderer && glRenderer.spawnShockwaveRing) {
+                            glRenderer.spawnShockwaveRing(player.x, player.y, 0xffffff, 10, 5, 1.08, 0.90);
+                        } else {
+                            const flash = new Particle(player.x, player.y, 0, 0, '#fff', 20);
+                            flash.shape = 'ring';
+                            flash.radius = 10; // start small
+                            flash.growth = 6.0; // expand quickly
+                            flash.thickness = 5;
+                            flash.glow = 36;
+                            flash.noWrap = true; // visual burst; don't wrap
+                            particlesAbove.push(flash);
+                        }
                     }
                 }
             } else if (spacePressed) {
@@ -7743,6 +8622,10 @@
                         }
                         bullets.push(b);
                     }
+                    // Orbital Pets mirror the triple charged shot
+                    try { fireOrbitalPetsCharged && fireOrbitalPetsCharged(angles, 2); } catch (e) {}
+                    // Clone Drones mirror the triple charged shot
+                    try { fireCloneDronesCharged && fireCloneDronesCharged(angles, 2); } catch (e) {}
                     // SFX: single fire + charge release accent once
                     try { audio.playSfx('bullet', { charge: 2 }); } catch (e) {}
                     try { audio.playSfx('chargeRelease', { level: 2 }); } catch (e) {}
@@ -7757,36 +8640,129 @@
                     if (player.shielded > 0) {
                         createExplosion(player.x, player.y, 150, '#ff0');
                         applyShockwave(player.x, player.y, SHIELD_SHOCKWAVE_RADIUS, SHIELD_SHOCKWAVE_STRENGTH);
+                        // Arc Blade: fire a 45° green blade volley that travels like an L2 shot
+                        {
+                            const noseX = player.x + Math.cos(player.angle) * 20;
+                            const noseY = player.y + Math.sin(player.angle) * 20;
+                            const rays = 3; // fan count across 45°
+                            const half = Math.PI / 8; // 22.5° each side => 45° total
+                            const step = (half * 2) / (rays - 1);
+                            const base = player.angle - half;
+                            // WebGL accent: emit bright green shards to sell the blade (shorter and slower)
+                            try {
+                                if (glRenderer && glRenderer.spawnAboveShard) {
+                                    for (let i = 0; i < rays; i++) {
+                                        const ang = base + step * i;
+                                        const sp = 5.5; // reduced speed
+                                        glRenderer.spawnAboveShard(
+                                            noseX,
+                                            noseY,
+                                            0x66ff88,
+                                            14, // reduced length
+                                            Math.cos(ang) * sp,
+                                            Math.sin(ang) * sp,
+                                            16,
+                                            1.0
+                                        );
+                                    }
+                                }
+                            } catch (e) {}
+                            // Functional blade: emit flak-variant green charged bullets along the arc (L2 power)
+                            for (let i = 0; i < rays; i++) {
+                                const ang = base + step * i;
+                                const b = new Bullet(noseX, noseY, ang, 2);
+                                b.color = '#66ff88';
+                                b.variant = 'flak';
+                                b.arcBlade = true; // flag for length/trail reduction
+                                // Reduce damage range by cutting lifetime
+                                if (typeof b.lifetime === 'number') b.lifetime = Math.max(1, Math.round(b.lifetime * 0.35));
+                                bullets.push(b);
+                            }
+                            // Canvas fallback sparkle: small green particles fanning out
+                            for (let i = 0; i < 10; i++) {
+                                const t = (i / 9) - 0.5; // -0.5..0.5 across arc
+                                const ang = player.angle + t * (Math.PI / 4);
+                                const sp = 2.2 + Math.random() * 1.8;
+                                const p = new Particle(noseX, noseY, Math.cos(ang) * sp, Math.sin(ang) * sp, '#77ff99', 18);
+                                p.shape = 'shard';
+                                p.glow = 18;
+                                p.noWrap = true;
+                                particlesAbove.push(p);
+                            }
+                        }
                         player.shielded = 0;
+                    }
+
+                    // Invisible combo on charged fire: non-damaging shockwave that pushes nearby asteroids
+                    if (player.invisible > 0) {
+                        // Large push-only shockwave; slightly bigger than shield's and a bit softer
+                        applyShockwave(player.x, player.y, 220, 8, { visualScale: 1.15 });
+                        // Visual: use WebGL ring if available; fallback to Canvas2D ring
+                        if (glRenderer && glRenderer.spawnShockwaveRing) {
+                            glRenderer.spawnShockwaveRing(player.x, player.y, 0xb060ff, 36, 6, 1.045, 0.93);
+                        } else {
+                            const ring = new Particle(player.x, player.y, 0, 0, '#b060ff', 22);
+                            ring.shape = 'ring';
+                            ring.radius = 8;
+                            ring.growth = 4.2;
+                            ring.thickness = 6;
+                            ring.glow = 30;
+                            ring.noWrap = true;
+                            particlesAbove.push(ring);
+                        }
+                    }
+
+                    // Rainbow Trail Detonation combo: consume Rainbow and emit a large damaging wave
+                    if (player.rainbow > 0) {
+                        triggerRainbowDetonation(player.x, player.y);
                     }
 
                     // Charged shot release burst (visuals once)
                     {
                         const noseX = player.x + Math.cos(player.angle) * 20;
                         const noseY = player.y + Math.sin(player.angle) * 20;
-                        const ring = new Particle(noseX, noseY, 0, 0, '#ff0', 18);
-                        ring.shape = 'ring';
-                        ring.radius = 4;
-                        ring.growth = 3.5;
-                        ring.thickness = 2.5;
-                        ring.glow = 22;
-                        particlesAbove.push(ring);
+                        if (glRenderer && glRenderer.spawnShockwaveRing) {
+                            glRenderer.spawnShockwaveRing(noseX, noseY, 0xffff00, 18, 3, 1.05, 0.93);
+                        } else {
+                            const ring = new Particle(noseX, noseY, 0, 0, '#ff0', 18);
+                            ring.shape = 'ring';
+                            ring.radius = 4;
+                            ring.growth = 3.5;
+                            ring.thickness = 2.5;
+                            ring.glow = 22;
+                            particlesAbove.push(ring);
+                        }
                         for (let i = 0; i < 10; i++) {
                             const spread = (Math.random() - 0.5) * Math.PI / 5;
                             const ang = player.angle + spread;
                             const sp = 4 + Math.random() * 3;
-                            const spark = new Particle(
-                                noseX,
-                                noseY,
-                                Math.cos(ang) * sp,
-                                Math.sin(ang) * sp,
-                                i < 5 ? '#fff' : '#ff0',
-                                14
-                            );
-                            spark.shape = 'shard';
-                            spark.length = 10 + Math.random() * 6;
-                            spark.glow = 18;
-                            particlesAbove.push(spark);
+                            if (glRenderer && glRenderer.spawnAboveShard) {
+                                const col = (i < 5) ? 0xffffff : 0xffff00;
+                                const len = 10 + Math.random() * 6;
+                                glRenderer.spawnAboveShard(
+                                    noseX,
+                                    noseY,
+                                    col,
+                                    len + 8,
+                                    Math.cos(ang) * sp,
+                                    Math.sin(ang) * sp,
+                                    14,
+                                    1.0
+                                );
+                            } else {
+                                const spark = new Particle(
+                                    noseX,
+                                    noseY,
+                                    Math.cos(ang) * sp,
+                                    Math.sin(ang) * sp,
+                                    i < 5 ? '#fff' : '#ff0',
+                                    14
+                                );
+                                spark.shape = 'shard';
+                                spark.length = 10 + Math.random() * 6;
+                                spark.glow = 18;
+                                particlesAbove.push(spark);
+                            }
                         }
                     }
                 } else if (bullets.length < 4) {
@@ -7831,6 +8807,12 @@
                         try { audio.playSfx('bullet', { charge: chargeLevel }); } catch (e) {}
                         // SFX: charge release accent for L1/L2
                         if (chargeLevel > 0) { try { audio.playSfx('chargeRelease', { level: chargeLevel }); } catch (e) {} }
+                        // Orbital Pets mirror the charged shot (single-angle)
+                        if (chargeLevel > 0) {
+                            try { fireOrbitalPetsCharged && fireOrbitalPetsCharged([player.angle], chargeLevel); } catch (e) {}
+                            // Clone Drones mirror the charged shot (single-angle)
+                            try { fireCloneDronesCharged && fireCloneDronesCharged([player.angle], chargeLevel); } catch (e) {}
+                        }
                     }
                 
                     // Pushback effect for charged shot (L1 base: 3, L2: +50%)
@@ -7845,7 +8827,80 @@
                             createExplosion(player.x, player.y, 150, '#ff0');
                             // New: emit a shockwave that knocks back nearby asteroids/mines/drones
                             applyShockwave(player.x, player.y, SHIELD_SHOCKWAVE_RADIUS, SHIELD_SHOCKWAVE_STRENGTH);
+                            // Arc Blade: fire a 45° green blade volley that travels like an L2 shot
+                            {
+                                const noseX = player.x + Math.cos(player.angle) * 20;
+                                const noseY = player.y + Math.sin(player.angle) * 20;
+                                const rays = 3; // fan count across 45°
+                                const half = Math.PI / 8; // 22.5° each side => 45° total
+                                const step = (half * 2) / (rays - 1);
+                                const base = player.angle - half;
+                                // WebGL accent: emit bright green shards to sell the blade (shorter and slower)
+                                try {
+                                    if (glRenderer && glRenderer.spawnAboveShard) {
+                                        for (let i = 0; i < rays; i++) {
+                                            const ang = base + step * i;
+                                            const sp = 5.5; // reduced speed
+                                            glRenderer.spawnAboveShard(
+                                                noseX,
+                                                noseY,
+                                                0x66ff88,
+                                                14, // reduced length
+                                                Math.cos(ang) * sp,
+                                                Math.sin(ang) * sp,
+                                                16,
+                                                1.0
+                                            );
+                                        }
+                                    }
+                                } catch (e) {}
+                                // Functional blade: emit flak-variant green charged bullets along the arc (L2 power)
+                                for (let i = 0; i < rays; i++) {
+                                    const ang = base + step * i;
+                                    const b = new Bullet(noseX, noseY, ang, 2);
+                                    b.color = '#66ff88';
+                                    b.variant = 'flak';
+                                    b.arcBlade = true; // flag for length/trail reduction
+                                    // Reduce damage range by cutting lifetime
+                                    if (typeof b.lifetime === 'number') b.lifetime = Math.max(1, Math.round(b.lifetime * 0.35));
+                                    bullets.push(b);
+                                }
+                                // Canvas fallback sparkle: small green particles fanning out
+                                for (let i = 0; i < 10; i++) {
+                                    const t = (i / 9) - 0.5; // -0.5..0.5 across arc
+                                    const ang = player.angle + t * (Math.PI / 4);
+                                    const sp = 2.2 + Math.random() * 1.8;
+                                    const p = new Particle(noseX, noseY, Math.cos(ang) * sp, Math.sin(ang) * sp, '#77ff99', 18);
+                                    p.shape = 'shard';
+                                    p.glow = 18;
+                                    p.noWrap = true;
+                                    particlesAbove.push(p);
+                                }
+                            }
                             player.shielded = 0;
+                        }
+
+                        // Invisible combo on charged fire: non-damaging shockwave that pushes nearby asteroids
+                        if (player.invisible > 0) {
+                            // Large push-only shockwave; slightly bigger than shield's and a bit softer
+                            applyShockwave(player.x, player.y, 220, 8, { visualScale: 1.15 });
+                            if (glRenderer && glRenderer.spawnShockwaveRing) {
+                                glRenderer.spawnShockwaveRing(player.x, player.y, 0xb060ff, 36, 6, 1.045, 0.93);
+                            } else {
+                                const ring = new Particle(player.x, player.y, 0, 0, '#b060ff', 22);
+                                ring.shape = 'ring';
+                                ring.radius = 8;
+                                ring.growth = 4.2;
+                                ring.thickness = 6;
+                                ring.glow = 30;
+                                ring.noWrap = true;
+                                particlesAbove.push(ring);
+                            }
+                        }
+
+                        // Rainbow Trail Detonation combo: consume Rainbow and emit a large damaging wave
+                        if (player.rainbow > 0) {
+                            triggerRainbowDetonation(player.x, player.y);
                         }
 
                         // Charged shot release burst
@@ -7853,30 +8908,49 @@
                             const noseX = player.x + Math.cos(player.angle) * 20;
                             const noseY = player.y + Math.sin(player.angle) * 20;
                             // Expanding ring
-                            const ring = new Particle(noseX, noseY, 0, 0, '#ff0', 18);
-                            ring.shape = 'ring';
-                            ring.radius = 4;
-                            ring.growth = 3.5;
-                            ring.thickness = 2.5;
-                            ring.glow = 22;
-                            particlesAbove.push(ring);
+                            if (glRenderer && glRenderer.spawnShockwaveRing) {
+                                glRenderer.spawnShockwaveRing(noseX, noseY, 0xffff00, 18, 3, 1.05, 0.93);
+                            } else {
+                                const ring = new Particle(noseX, noseY, 0, 0, '#ff0', 18);
+                                ring.shape = 'ring';
+                                ring.radius = 4;
+                                ring.growth = 3.5;
+                                ring.thickness = 2.5;
+                                ring.glow = 22;
+                                particlesAbove.push(ring);
+                            }
                             // Forward shard sparks
                             for (let i = 0; i < 10; i++) {
                                 const spread = (Math.random() - 0.5) * Math.PI / 5;
                                 const ang = player.angle + spread;
                                 const sp = 4 + Math.random() * 3;
-                                const spark = new Particle(
-                                    noseX,
-                                    noseY,
-                                    Math.cos(ang) * sp,
-                                    Math.sin(ang) * sp,
-                                    i < 5 ? '#fff' : '#ff0',
-                                    14
-                                );
-                                spark.shape = 'shard';
-                                spark.length = 10 + Math.random() * 6;
-                                spark.glow = 18;
-                                particlesAbove.push(spark);
+                                if (glRenderer && glRenderer.spawnAboveShard) {
+                                    const col = (i < 5) ? 0xffffff : 0xffff00;
+                                    const len = 10 + Math.random() * 6;
+                                    glRenderer.spawnAboveShard(
+                                        noseX,
+                                        noseY,
+                                        col,
+                                        len + 8,
+                                        Math.cos(ang) * sp,
+                                        Math.sin(ang) * sp,
+                                        14,
+                                        1.0
+                                    );
+                                } else {
+                                    const spark = new Particle(
+                                        noseX,
+                                        noseY,
+                                        Math.cos(ang) * sp,
+                                        Math.sin(ang) * sp,
+                                        i < 5 ? '#fff' : '#ff0',
+                                        14
+                                    );
+                                    spark.shape = 'shard';
+                                    spark.length = 10 + Math.random() * 6;
+                                    spark.glow = 18;
+                                    particlesAbove.push(spark);
+                                }
                             }
                         }
                     }
@@ -7909,6 +8983,10 @@
                     // Damage boss shield nodes/core within blast radius
                     if (bossActive && boss) {
                         boss.hitByExplosion(player.x, player.y, 150);
+                    }
+                    // Bonus asteroid explosion damage
+                    if (bonusActive) {
+                        try { bonusHitByExplosion(player.x, player.y, 150); } catch (e) {}
                     }
                     // Destroy nearby asteroids
                     if (gameMode === 'gauntlet') {
@@ -8018,7 +9096,7 @@
                                 // Level 15: chance to drop a power-up on bomb kill
                                 if (level === 15 && canPushPowerup && canPushPowerup()) {
                                     if (Math.random() < 0.3) {
-                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital', 'armor', 'durable'];
+                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital', 'armor', 'durable', 'mine'];
                                         const type = types[Math.floor(Math.random() * types.length)];
                                         pushPowerup(d.x, d.y, type);
                                     }
@@ -8080,15 +9158,31 @@
                             ring.thickness = 2.8 - i * 0.4;
                             ring.glow = 18 + i * 6;
                             ring.noWrap = true;
-                            if (i % 2 === 0) particles.push(ring); else particlesAbove.push(ring);
+                            if (i % 2 === 0) {
+                                particles.push(ring);
+                            } else {
+                                // Route above-ship ring to WebGL when available
+                                if (glRenderer && glRenderer.spawnShockwaveRing) {
+                                    const colNum = parseInt((col || '#ffffff').replace('#','0x')) || 0xffffff;
+                                    const growth = 1.035 + 0.005 * i;
+                                    const fade = 0.935;
+                                    glRenderer.spawnShockwaveRing(player.x, player.y, colNum, ring.radius, ring.thickness, growth, fade);
+                                } else {
+                                    particlesAbove.push(ring);
+                                }
+                            }
                         }
                         // Central white pop
-                        const core = new Particle(player.x, player.y, 0, 0, '#ffffff', 12);
-                        core.shape = 'dot';
-                        core.radius = 4;
-                        core.glow = 24;
-                        core.noWrap = true;
-                        particlesAbove.push(core);
+                        if (glRenderer && glRenderer.spawnAboveDot) {
+                            glRenderer.spawnAboveDot(player.x, player.y, 0xffffff, 4, 0, 0, 12, 1.0);
+                        } else {
+                            const core = new Particle(player.x, player.y, 0, 0, '#ffffff', 12);
+                            core.shape = 'dot';
+                            core.radius = 4;
+                            core.glow = 24;
+                            core.noWrap = true;
+                            particlesAbove.push(core);
+                        }
                         // Optional WebGL glow pulse (light purple)
                         if (glRenderer && glRenderer.spawnGlow) glRenderer.spawnGlow(player.x, player.y, 0xafabde, 26, 0.85);
                     } catch (e) {}
@@ -8182,6 +9276,19 @@
                             const my = player.y + Math.sin(player.angle) * 20;
                             glRenderer.spawnChromaticRing(mx, my, 10, 2, 1.03, 0.94, 2);
                             if (glRenderer.spawnShockwaveRing) glRenderer.spawnShockwaveRing(mx, my, 0xffffff, 10, 2, 1.03, 0.94);
+                            // Soft red glow at muzzle similar to laser
+                            if (glRenderer.spawnSoftGlow) {
+                                glRenderer.spawnSoftGlow(mx, my, {
+                                    color: 0xff3333,
+                                    radius: 30,
+                                    innerScale: 0.15,
+                                    innerAlpha: 0.95,
+                                    outerAlpha: 0.25,
+                                    holdFrames: 10,
+                                    fadeFrames: 10,
+                                    growth: 1.0,
+                                });
+                            }
                         }
                     } catch (e) {}
                     for (let i = 0; i < 12; i++) {
@@ -8230,7 +9337,8 @@
                         const baseHues = [0, 120, 240, 300];
                         for (let i = 0; i < baseHues.length; i++) {
                             const hue = baseHues[i];
-                            const ring = new Particle(player.x, player.y, 0, 0, `hsl(${hue}, 100%, 60%)`, 26 - i * 3);
+                            const colStr = `hsl(${hue}, 100%, 60%)`;
+                            const ring = new Particle(player.x, player.y, 0, 0, colStr, 26 - i * 3);
                             ring.shape = 'ring';
                             ring.radius = 8 + i * 5;
                             ring.growth = 2.8 + i * 0.6;
@@ -8238,15 +9346,38 @@
                             ring.glow = 24 + i * 6;
                             ring.noWrap = true;
                             // Alternate layers between below and above for depth
-                            if (i % 2 === 0) particles.push(ring); else particlesAbove.push(ring);
+                            if (i % 2 === 0) {
+                                particles.push(ring);
+                            } else {
+                                if (glRenderer && glRenderer.spawnShockwaveRing) {
+                                    // Approximate HSL color to a close RGB value for Pixi (quick map for these hues)
+                                    const hueToHex = (h) => {
+                                        if (h === 0) return 0xff6666; // red-ish
+                                        if (h === 120) return 0x66ff66; // green-ish
+                                        if (h === 240) return 0x6699ff; // blue-ish
+                                        if (h === 300) return 0xff66ff; // magenta-ish
+                                        return 0xffffff;
+                                    };
+                                    const colNum = hueToHex(hue);
+                                    const growth = 1.035 + 0.006 * i;
+                                    const fade = 0.935;
+                                    glRenderer.spawnShockwaveRing(player.x, player.y, colNum, ring.radius, ring.thickness, growth, fade);
+                                } else {
+                                    particlesAbove.push(ring);
+                                }
+                            }
                         }
                         // Small central white pop for emphasis
-                        const core = new Particle(player.x, player.y, 0, 0, '#ffffff', 14);
-                        core.shape = 'dot';
-                        core.radius = 4.5;
-                        core.glow = 28;
-                        core.noWrap = true;
-                        particlesAbove.push(core);
+                        if (glRenderer && glRenderer.spawnAboveDot) {
+                            glRenderer.spawnAboveDot(player.x, player.y, 0xffffff, 4.5, 0, 0, 14, 1.0);
+                        } else {
+                            const core = new Particle(player.x, player.y, 0, 0, '#ffffff', 14);
+                            core.shape = 'dot';
+                            core.radius = 4.5;
+                            core.glow = 28;
+                            core.noWrap = true;
+                            particlesAbove.push(core);
+                        }
                         // Soft WebGL glow pulse if available
                         try { if (glRenderer && glRenderer.spawnGlow) glRenderer.spawnGlow(player.x, player.y, 0xff77ff, 32, 0.9); } catch (e) {}
                     }
@@ -8299,12 +9430,13 @@
                                 16
                             ));
                         }
-                        // Optional WebGL glow
+                        // Optional WebGL glow at pet
                         try { if (glRenderer && glRenderer.spawnGlow) glRenderer.spawnGlow(pet.x, pet.y, 0xeee8aa, 22, 0.7); } catch (e) {}
-                        // Small chroma shockwave on spawn
+                        // Small chroma shockwave on spawn centered on the ship
                         try {
                             if (glRenderer && glRenderer.spawnChromaticRing) {
-                                glRenderer.spawnChromaticRing(pet.x, pet.y, 16, 2, 1.02, 0.945, 2);
+                                // Use zero offset so all color channels overlap exactly at the ship center
+                                glRenderer.spawnChromaticRing(player.x, player.y, 16, 2, 1.02, 0.945, 0);
                             }
                         } catch (e) {}
                         orbitalPets.push(pet);
@@ -8326,6 +9458,10 @@
                     // Boss interaction: damage plates and core along the beam line
                     if (bossActive && boss) {
                         boss.hitByLaserLine(startX, startY, endX, endY);
+                    }
+                    // Bonus asteroid line damage
+                    if (bonusActive) {
+                        try { bonusHitByLaserLine(startX, startY, endX, endY); } catch (e) {}
                     }
                     // Laser-UFO interaction
                     if (ufo && !ufo.dead && !ufo.despawned) {
@@ -8424,7 +9560,7 @@
                                 // Level 15: chance to drop a power-up on laser kill
                                 if (level === 15 && canPushPowerup && canPushPowerup()) {
                                     if (Math.random() < 0.3) {
-                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital', 'durable'];
+                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital', 'durable', 'mine'];
                                         const type = types[Math.floor(Math.random() * types.length)];
                                         pushPowerup(d.x, d.y, type);
                                     }
@@ -8467,11 +9603,25 @@
                     laserEnd = { x: endX, y: endY };
                     laserTimer = 18; // ~0.3s at 60fps
 
-                    // WebGL pulse for laser (rings + glow only)
+                    // WebGL pulse for laser (rings + soft glow at muzzle)
                     if (glRenderer) {
                         if (glRenderer.pulseLaser) glRenderer.pulseLaser(1.0);
-                        if (glRenderer.spawnGlow) glRenderer.spawnGlow(startX, startY, 0xff66ff, 26, 0.8);
                         try {
+                            if (glRenderer.spawnSoftGlow) {
+                                glRenderer.spawnSoftGlow(startX, startY, {
+                                    color: 0xff66cc,
+                                    radius: 30,
+                                    innerScale: 0.15,
+                                    innerAlpha: 0.95,
+                                    outerAlpha: 0.25,
+                                    holdFrames: 10,
+                                    fadeFrames: 10,
+                                    growth: 1.0,
+                                });
+                            } else if (glRenderer.spawnGlow) {
+                                // Fallback to simple glow if soft glow is unavailable
+                                glRenderer.spawnGlow(startX, startY, 0xff66cc, 24, 0.85);
+                            }
                             if (glRenderer.spawnChromaticRing) {
                                 glRenderer.spawnChromaticRing(startX, startY, 22, 2, 1.025, 0.945, 2);
                             }
@@ -8531,15 +9681,30 @@
                                 ring.thickness = 2.6 - i * 0.4;
                                 ring.glow = 18 + i * 5;
                                 ring.noWrap = true;
-                                if (i % 2 === 0) particles.push(ring); else particlesAbove.push(ring);
+                                if (i % 2 === 0) {
+                                    particles.push(ring);
+                                } else {
+                                    if (glRenderer && glRenderer.spawnShockwaveRing) {
+                                        const colNum = parseInt((col || '#ffffff').replace('#','0x')) || 0xffffff;
+                                        const growth = 1.032 + 0.005 * i;
+                                        const fade = 0.935;
+                                        glRenderer.spawnShockwaveRing(turret.x, turret.y, colNum, ring.radius, ring.thickness, growth, fade);
+                                    } else {
+                                        particlesAbove.push(ring);
+                                    }
+                                }
                             }
                             // Central white pop
-                            const core = new Particle(turret.x, turret.y, 0, 0, '#ffffff', 12);
-                            core.shape = 'dot';
-                            core.radius = 4;
-                            core.glow = 22;
-                            core.noWrap = true;
-                            particlesAbove.push(core);
+                            if (glRenderer && glRenderer.spawnAboveDot) {
+                                glRenderer.spawnAboveDot(turret.x, turret.y, 0xffffff, 4, 0, 0, 12, 1.0);
+                            } else {
+                                const core = new Particle(turret.x, turret.y, 0, 0, '#ffffff', 12);
+                                core.shape = 'dot';
+                                core.radius = 4;
+                                core.glow = 22;
+                                core.noWrap = true;
+                                particlesAbove.push(core);
+                            }
                             // Soft WebGL glow pulse if available
                             try { if (glRenderer && glRenderer.spawnGlow) glRenderer.spawnGlow(turret.x, turret.y, 0xaaffff, 26, 0.8); } catch (e) {}
                         }
@@ -8548,6 +9713,23 @@
                         player.cloneStock--;
                         if (player.cloneStock > 0) {
                             player.currentPowerup = 'clone';
+                        } else {
+                            player.currentPowerup = null;
+                        }
+                    }
+                    break;
+
+                case 'mine':
+                    // Place a player mine at current position if stock is available
+                    if (player.mineStock > 0) {
+                        const pm = createPlayerMine(player.x, player.y);
+                        playerMines.push(pm);
+                        // SFX: deploy
+                        try { audio.playSfx('blip'); } catch (e) {}
+                        // consume one stock and keep selected if any remains
+                        player.mineStock--;
+                        if (player.mineStock > 0) {
+                            player.currentPowerup = 'mine';
                         } else {
                             player.currentPowerup = null;
                         }
@@ -8575,6 +9757,168 @@
             powerups.push(new Powerup(x, y, type));
         }
         function canPushPowerup() { return powerups.length < 4; }
+
+        // Player-deployed Mine helper
+        function createPlayerMine(x, y) {
+            const baseR = (typeof MINE_RADIUS === 'number' ? MINE_RADIUS : 18);
+            const mine = {
+                x, y,
+                vx: 0, vy: 0,
+                radius: Math.max(6, Math.round(baseR * 0.7)),
+                pulse: 0,
+                fuse: 180, // 3 seconds @60fps
+                exploded: false,
+                color: '#fc0356',
+                update() {
+                    if (this.exploded) return;
+                    this.pulse += 0.08;
+                    if (this.fuse-- <= 0) {
+                        detonatePlayerMine(this);
+                    }
+                },
+                draw(ctx) {
+                    if (this.exploded) return;
+                    const pr = this.radius + Math.sin(this.pulse) * 2;
+                    for (let i = 3; i >= 0; i--) {
+                        ctx.globalAlpha = i === 0 ? 1 : 0.3;
+                        ctx.strokeStyle = this.color;
+                        ctx.shadowBlur = 16 - i * 4;
+                        ctx.shadowColor = this.color;
+                        ctx.lineWidth = i === 0 ? 2 : 1;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, pr + i * 3, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                    ctx.globalAlpha = 1;
+                    ctx.shadowBlur = 10;
+                    // White blinking center light
+                    ctx.shadowColor = '#ffffff';
+                    ctx.fillStyle = '#ffffff';
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, 4 + Math.sin(this.pulse * 2) * 1.5, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                }
+            };
+            return mine;
+        }
+        function detonatePlayerMine(mine) {
+            if (!mine || mine.exploded) return;
+            mine.exploded = true;
+            // Visual pop (mine theme)
+            createExplosion(mine.x, mine.y, 80, '#fc0356');
+            // Chromatic shockwave visual (WebGL overlay)
+            try {
+                if (glRenderer && glRenderer.spawnChromaticRing) {
+                    glRenderer.spawnChromaticRing(mine.x, mine.y, 36, 2, 1.03, 0.945, 2);
+                }
+                // Brief additive pulse on the overlay
+                if (glRenderer && glRenderer.pulseExplosion) {
+                    glRenderer.pulseExplosion(90, mine.x, mine.y);
+                }
+            } catch (e) {}
+            const R = 156; // damage radius (30% larger than previous 120)
+            // Damage boss parts within blast radius
+            if (bossActive && boss && typeof boss.hitByExplosion === 'function') {
+                try { boss.hitByExplosion(mine.x, mine.y, R); } catch (e) {}
+            }
+            // Bonus asteroid explosion damage
+            if (bonusActive) {
+                try { bonusHitByExplosion(mine.x, mine.y, R); } catch (e) {}
+            }
+            // Damage nearby phased asteroids (only when visible)
+            if (phasedAsteroids && phasedAsteroids.length > 0) {
+                for (let i = 0; i < phasedAsteroids.length; i++) {
+                    const pa = phasedAsteroids[i];
+                    if (!pa || pa.dead || !pa.visible) continue;
+                    const dx = pa.x - mine.x;
+                    const dy = pa.y - mine.y;
+                    if (Math.hypot(dx, dy) < R + pa.radius) {
+                        try {
+                            pa.hit({
+                                createExplosion,
+                                awardPoints: (p, x, y, fixed) => awardPoints(p, x, y, fixed),
+                                applyShockwave: () => {},
+                                addEXP: (amt, src) => addEXP(amt, src),
+                                playSfx: (name, opts) => { try { audio.playSfx(name, opts); } catch (e) {} },
+                                onDestroyed: () => { if (level === 13 && !bossActive) spawnPhasedAsteroidOffscreen(); }
+                            }, pa.x, pa.y);
+                        } catch (e) {}
+                    }
+                }
+            }
+            // Damage tether nodes within radius (only after tether is broken)
+            if (tetherPairs && tetherPairs.length > 0) {
+                for (let i = 0; i < tetherPairs.length; i++) {
+                    const tp = tetherPairs[i];
+                    if (!tp || !tp.tetherBroken) continue;
+                    if (!tp.aDead) {
+                        const dxA = tp.ax - mine.x, dyA = tp.ay - mine.y;
+                        if (Math.hypot(dxA, dyA) < R + tp.radius) {
+                            try { tp.hitNode('A', { createExplosion, awardPoints: (p, x, y, fixed) => awardPoints(p, x, y, fixed), addEXP: (amt, src) => addEXP(amt, src), spawnParticle, playSfx: (n,o) => { try { audio.playSfx(n,o); } catch(e){} } }, tp.ax, tp.ay); } catch (e) {}
+                        }
+                    }
+                    if (!tp.bDead) {
+                        const dxB = tp.bx - mine.x, dyB = tp.by - mine.y;
+                        if (Math.hypot(dxB, dyB) < R + tp.radius) {
+                            try { tp.hitNode('B', { createExplosion, awardPoints: (p, x, y, fixed) => awardPoints(p, x, y, fixed), addEXP: (amt, src) => addEXP(amt, src), spawnParticle, playSfx: (n,o) => { try { audio.playSfx(n,o); } catch(e){} } }, tp.bx, tp.by); } catch (e) {}
+                        }
+                    }
+                }
+            }
+            // Destroy nearby asteroids
+            try {
+                const toAdd = [];
+                if (typeof filterInPlace === 'function') {
+                    filterInPlace(asteroids, (asteroid) => {
+                        const dx = asteroid.x - mine.x;
+                        const dy = asteroid.y - mine.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < R) {
+                            const newAsteroids = asteroid.destroy(asteroidDeps());
+                            maybeSpawnReplacement(asteroid, newAsteroids);
+                            if (newAsteroids) toAdd.push(...newAsteroids);
+                            return false;
+                        }
+                        return true;
+                    });
+                } else {
+                    for (let i = asteroids.length - 1; i >= 0; i--) {
+                        const a = asteroids[i];
+                        const dx = a.x - mine.x;
+                        const dy = a.y - mine.y;
+                        if (Math.hypot(dx, dy) < R) {
+                            const newAsteroids = a.destroy(asteroidDeps());
+                            maybeSpawnReplacement(a, newAsteroids);
+                            asteroids.splice(i, 1);
+                            if (newAsteroids) toAdd.push(...newAsteroids);
+                        }
+                    }
+                }
+                if (toAdd.length) asteroids.push(...toAdd);
+                if (ENABLE_SPATIAL_GRID && asteroidGrid) { asteroidGrid.buildFrom(asteroids); }
+            } catch (e) {}
+            // Destroy nearby drones within radius
+            if (drones && drones.length > 0) {
+                for (let i = 0; i < drones.length; i++) {
+                    const d = drones[i];
+                    if (d.dead) continue;
+                    const dx = d.x - mine.x, dy = d.y - mine.y;
+                    if (Math.hypot(dx, dy) < R + (d.radius || 12)) {
+                        d.dead = true;
+                        createExplosion(d.x, d.y, 40, (d.explosionColor || '#6ff'));
+                        // Level 15: chance to drop a power-up on mine kill
+                        if (level === 15 && canPushPowerup && canPushPowerup()) {
+                            if (Math.random() < 0.3) {
+                                const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital', 'armor', 'durable', 'mine'];
+                                const type = types[Math.floor(Math.random() * types.length)];
+                                pushPowerup(d.x, d.y, type);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // Centralized player damage handler with armor absorption
         function takePlayerHit() {
             // Ignore additional hits while we're waiting to show Game Over
@@ -8666,6 +10010,10 @@
 
         // Spawn a single asteroid just outside the screen bounds, moving inward
         function spawnAsteroidOffscreen(size, armored = false, elite = false) {
+            // Block all normal/armored/elite spawns during bonus level
+            if (bonusActive) return;
+            // Also block any spawns while the boss defeat freeze is active
+            if (bossDefeatFreeze > 0) return;
             if (bossActive) return;
             const margin = 40;
             const side = Math.floor(Math.random() * 4); // 0: left, 1: right, 2: top, 3: bottom
@@ -8709,6 +10057,10 @@
 
         // Convenience for continuous normal asteroid flow
         function spawnOffscreenNormalAsteroid() {
+            // Suppress all normal asteroid spawning during bonus level
+            if (bonusActive) return;
+            // Suppress during boss defeat freeze window
+            if (bossDefeatFreeze > 0) return;
             // Suppress normal asteroid spawning entirely during Level 13
             if (level === 13) return;
             // Level 9: 35% chance to spawn an armored asteroid instead; not limited by normal cap
@@ -8818,6 +10170,59 @@
             // Trigger spawn visual on respawn
             spawnVisualTimer = SPAWN_VISUAL_SPAN;
         }
+// Combo: Orbital Pets mirror charged fire (single or triple)
+function fireOrbitalPetsCharged(angles, chargeLevel) {
+            if (!orbitalPets || orbitalPets.length === 0) return;
+            const cap = 6; // perf cap
+            const nPets = Math.min(cap, orbitalPets.length);
+            for (let i = 0; i < nPets; i++) {
+                const pet = orbitalPets[i];
+                if (!pet) continue;
+                for (let k = 0; k < angles.length; k++) {
+                    const ang = angles[k];
+                    const bx = pet.x + Math.cos(ang) * 8;
+                    const by = pet.y + Math.sin(ang) * 8;
+                    const b = new Bullet(bx, by, ang, chargeLevel);
+                    // Match player bullet style for consistency
+                    const style = getBulletStyleForSkin(window.activeSkinId, chargeLevel);
+                    if (style && style.color) b.color = style.color;
+                    if (style && style.variant) b.variant = style.variant;
+                    bullets.push(b);
+                }
+                // Small muzzle flash
+                pet.muzzleFlash = 3;
+            }
+        }
+
+        
+// Combo: Clone Drones mirror charged fire (single or triple)
+function fireCloneDronesCharged(angles, chargeLevel) {
+            if (!cloneDrones || cloneDrones.length === 0) return;
+            const cap = 6; // perf cap
+            const n = Math.min(cap, cloneDrones.length);
+            for (let i = 0; i < n; i++) {
+                const clone = cloneDrones[i];
+                if (!clone || clone.dead || clone.despawned) continue;
+                // Determine firing angles relative to the clone's own facing
+                const isTriple = angles && angles.length >= 3;
+                const cloneAngles = isTriple
+                    ? [clone.angle, clone.angle - Math.PI / 4, clone.angle + Math.PI / 4]
+                    : [clone.angle];
+                for (let k = 0; k < cloneAngles.length; k++) {
+                    const ang = cloneAngles[k];
+                    const bx = clone.x + Math.cos(ang) * 12;
+                    const by = clone.y + Math.sin(ang) * 12;
+                    const b = new Bullet(bx, by, ang, chargeLevel);
+                    // Match player bullet style
+                    const style = getBulletStyleForSkin(window.activeSkinId, chargeLevel);
+                    if (style && style.color) b.color = style.color;
+                    if (style && style.variant) b.variant = style.variant;
+                    bullets.push(b);
+                }
+                // Optional: brief flash marker on clone (if it supports it)
+                try { clone.muzzleFlash = 3; } catch (e) {}
+            }
+        }
 
         // Spawn the Celestial Companion near the player with a small activation shimmer
         function spawnCompanion(initial = false) {
@@ -8913,6 +10318,42 @@
             bullets.forEach((bullet, bulletIndex) => {
                 // If the bullet already pierced something this frame, skip further collisions
                 if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                // Bullet-bonus collisions
+                if (bonusActive) {
+                    let hitBonus = false;
+                    if (bonusMain) {
+                        const dx = bullet.x - bonusMain.x, dy = bullet.y - bonusMain.y;
+                        if (Math.hypot(dx, dy) < (bonusMain.radius + bullet.radius)) {
+                            hitBonus = bonusHitAt(bullet.x, bullet.y);
+                        }
+                    }
+                    if (!hitBonus && bonusChunks && bonusChunks.length) {
+                        for (let i = 0; i < bonusChunks.length; i++) {
+                            const c = bonusChunks[i];
+                            const dx = bullet.x - c.x, dy = bullet.y - c.y;
+                            if (Math.hypot(dx, dy) < (c.radius + bullet.radius)) {
+                                hitBonus = bonusHitAt(bullet.x, bullet.y);
+                                break;
+                            }
+                        }
+                    }
+                    if (!hitBonus && bonusSmalls && bonusSmalls.length) {
+                        for (let i = 0; i < bonusSmalls.length; i++) {
+                            const s = bonusSmalls[i];
+                            if (!s || s.dead) continue;
+                            const dx = bullet.x - s.x, dy = bullet.y - s.y;
+                            if (Math.hypot(dx, dy) < (s.radius + bullet.radius)) {
+                                hitBonus = bonusHitAt(bullet.x, bullet.y);
+                                break;
+                            }
+                        }
+                    }
+                    if (hitBonus) {
+                        consumePlayerBulletOnHit(bullet, bulletIndex);
+                        // After a pierce, skip additional collisions this frame
+                        if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                    }
+                }
                 const asteroidIterable = ENABLE_SPATIAL_GRID
                     ? asteroidGrid.queryCircle(bullet.x, bullet.y, bullet.radius + maxAsteroidRadius)
                     : asteroids;
@@ -9032,6 +10473,20 @@
                         }
                     });
                 }
+                // Bullet-playerMine collisions (detonate when shot by player)
+                if (playerMines && playerMines.length > 0 && bullet && bullet._skipCollisionsFrame !== frameCount) {
+                    for (let i = 0; i < playerMines.length; i++) {
+                        const pm = playerMines[i];
+                        if (!pm || pm.exploded) continue;
+                        const dxp = bullet.x - pm.x;
+                        const dyp = bullet.y - pm.y;
+                        if (Math.hypot(dxp, dyp) < (pm.radius + bullet.radius)) {
+                            consumePlayerBulletOnHit(bullet, bulletIndex);
+                            detonatePlayerMine(pm);
+                            break;
+                        }
+                    }
+                }
                 if (bullet && bullet._skipCollisionsFrame === frameCount) return;
                 // Bullet-drone collisions
                 if (drones && drones.length > 0) {
@@ -9048,7 +10503,7 @@
                                 // Level 15: chance to drop a power-up on bullet kill
                                 if (level === 15 && canPushPowerup && canPushPowerup()) {
                                     if (Math.random() < 0.3) {
-                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital'];
+                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital', 'mine'];
                                         const type = types[Math.floor(Math.random() * types.length)];
                                         pushPowerup(d.x, d.y, type);
                                     }
@@ -9069,7 +10524,7 @@
                                 // Level 15: chance to drop a power-up on bullet kill
                                 if (level === 15 && canPushPowerup && canPushPowerup()) {
                                     if (Math.random() < 0.3) {
-                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital'];
+                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital', 'mine'];
                                         const type = types[Math.floor(Math.random() * types.length)];
                                         pushPowerup(d.x, d.y, type);
                                     }
@@ -9148,6 +10603,56 @@
                             return true;
                         }
                     });
+                }
+            }
+            // Player Mine interactions: immediate detonation on contact
+            if (playerMines && playerMines.length > 0) {
+                for (let i = 0; i < playerMines.length; i++) {
+                    const pm = playerMines[i];
+                    if (!pm || pm.exploded) continue;
+                    // Asteroids contact
+                    if (ENABLE_SPATIAL_GRID && asteroidGrid) {
+                        const candidates = asteroidGrid.queryCircle(pm.x, pm.y, pm.radius + maxAsteroidRadius);
+                        for (let k = 0; k < candidates.length; k++) {
+                            const a = candidates[k];
+                            const dx = pm.x - a.x, dy = pm.y - a.y;
+                            if (Math.hypot(dx, dy) < pm.radius + a.radius) { detonatePlayerMine(pm); break; }
+                        }
+                    } else {
+                        for (let k = 0; k < asteroids.length; k++) {
+                            const a = asteroids[k];
+                            const dx = pm.x - a.x, dy = pm.y - a.y;
+                            if (Math.hypot(dx, dy) < pm.radius + a.radius) { detonatePlayerMine(pm); break; }
+                        }
+                    }
+                    if (pm.exploded) continue;
+                    // Drones contact
+                    if (drones && drones.length > 0) {
+                        if (ENABLE_SPATIAL_GRID && droneGrid) {
+                            const cand = droneGrid.queryCircle(pm.x, pm.y, pm.radius + maxDroneRadius);
+                            for (let k = 0; k < cand.length; k++) {
+                                const d = cand[k];
+                                if (d.dead) continue;
+                                const dx = pm.x - d.x, dy = pm.y - d.y;
+                                if (Math.hypot(dx, dy) < pm.radius + (d.radius || 12)) { detonatePlayerMine(pm); break; }
+                            }
+                        } else {
+                            for (let k = 0; k < drones.length; k++) {
+                                const d = drones[k];
+                                if (d.dead) continue;
+                                const dx = pm.x - d.x, dy = pm.y - d.y;
+                                if (Math.hypot(dx, dy) < pm.radius + (d.radius || 12)) { detonatePlayerMine(pm); break; }
+                            }
+                        }
+                    }
+                    if (pm.exploded) continue;
+                    // Boss/UFO contact
+                    if (bossActive && boss && typeof boss.collidesWithCircle === 'function') {
+                        if (boss.collidesWithCircle(pm.x, pm.y, pm.radius)) detonatePlayerMine(pm);
+                    }
+                    if (!pm.exploded && ufo && !ufo.dead && !ufo.despawned) {
+                        if (Math.hypot(pm.x - ufo.x, pm.y - ufo.y) < (pm.radius + ufo.radius)) detonatePlayerMine(pm);
+                    }
                 }
             }
 
@@ -9232,7 +10737,7 @@
                 return eb.lifetime > 0;
             });
         }
-    }
+        }
             // Mines interactions (Level 6)
             if (mines && mines.length > 0) {
                 // Proximity detonation: ONLY player can trigger by proximity (or bullets elsewhere)
@@ -9462,6 +10967,39 @@
                         takePlayerHit();
                     }
                 }
+                // Player-bonus collisions (main, chunks, smalls)
+                if (bonusActive) {
+                    if (bonusMain) {
+                        const dxB = player.x - bonusMain.x;
+                        const dyB = player.y - bonusMain.y;
+                        if (Math.hypot(dxB, dyB) < player.radius + bonusMain.radius) {
+                            takePlayerHit();
+                        }
+                    }
+                    if (bonusChunks && bonusChunks.length) {
+                        for (let i = 0; i < bonusChunks.length; i++) {
+                            const c = bonusChunks[i];
+                            const dxC = player.x - c.x;
+                            const dyC = player.y - c.y;
+                            if (Math.hypot(dxC, dyC) < player.radius + c.radius) {
+                                takePlayerHit();
+                                break;
+                            }
+                        }
+                    }
+                    if (bonusSmalls && bonusSmalls.length) {
+                        for (let i = 0; i < bonusSmalls.length; i++) {
+                            const s = bonusSmalls[i];
+                            if (!s || s.dead) continue;
+                            const dxS = player.x - s.x;
+                            const dyS = player.y - s.y;
+                            if (Math.hypot(dxS, dyS) < player.radius + s.radius) {
+                                takePlayerHit();
+                                break;
+                            }
+                        }
+                    }
+                }
                 // Player-drone collisions
                 if (drones && drones.length > 0) {
                     if (ENABLE_SPATIAL_GRID && droneGrid) {
@@ -9478,7 +11016,7 @@
                                 // Chance to drop a power-up on drone impact
                                 if (canPushPowerup && canPushPowerup()) {
                                     if (Math.random() < 0.3) {
-                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital'];
+                                        const types = ['bomb', 'shield', 'teleport', 'flak', 'rainbow', 'invisible', 'laser', 'clone', 'orbital', 'mine'];
                                         const type = types[Math.floor(Math.random() * types.length)];
                                         pushPowerup(d.x, d.y, type);
                                     }
@@ -9572,16 +11110,17 @@
                             if (fragments) {
                                 asteroids.push(...fragments);
                             }
-                            // If ship destroyed, end scenario (delayed like player death)
+                            // If ship destroyed, end scenario with cinematic delay
                             if (strandedShip.health <= 0) {
                                 strandedShip.active = false;
-                                // Stranded ship explosion
-                                createExplosion(strandedShip.x, strandedShip.y, strandedShip.radius * 2, '#f66');
-                                // Also explode the player ship for dramatic effect
-                                createExplosion(player.x, player.y, 60, '#f66');
-                                // Mirror player-death pending Game Over delay
+                                // Huge explosion and shockwave to communicate failure clearly
+                                createExplosion(strandedShip.x, strandedShip.y, Math.max(120, strandedShip.radius * 3), '#f66');
+                                try { applyShockwave(strandedShip.x, strandedShip.y, 240, 11.0, { visualScale: 1.1 }); } catch (e) {}
+                                // Begin delayed Game Over with gradual fade-in to black
                                 pendingGameOver = true;
-                                pendingGameOverTimer = 180; // 3 seconds at 60fps
+                                pendingGameOverTimer = 180; // 3 seconds @60fps
+                                gameOverFadeFrames = pendingGameOverTimer; // start fade from 0 alpha
+                                gameOverFadeTotal = gameOverFadeFrames;
                                 // Damp player motion to let explosions play out
                                 player.vx = 0; player.vy = 0;
                             }
@@ -9606,16 +11145,17 @@
                             if (fragments) {
                                 asteroids.push(...fragments);
                             }
-                            // If ship destroyed, end scenario (delayed like player death)
+                            // If ship destroyed, end scenario with cinematic delay
                             if (strandedShip.health <= 0) {
                                 strandedShip.active = false;
-                                // Stranded ship explosion
-                                createExplosion(strandedShip.x, strandedShip.y, strandedShip.radius * 2, '#f66');
-                                // Also explode the player ship for dramatic effect
-                                createExplosion(player.x, player.y, 60, '#f66');
-                                // Mirror player-death pending Game Over delay
+                                // Huge explosion and shockwave to communicate failure clearly
+                                createExplosion(strandedShip.x, strandedShip.y, Math.max(120, strandedShip.radius * 3), '#f66');
+                                try { applyShockwave(strandedShip.x, strandedShip.y, 240, 11.0, { visualScale: 1.1 }); } catch (e) {}
+                                // Begin delayed Game Over with gradual fade-in to black
                                 pendingGameOver = true;
-                                pendingGameOverTimer = 180; // 3 seconds at 60fps
+                                pendingGameOverTimer = 180; // 3 seconds @60fps
+                                gameOverFadeFrames = pendingGameOverTimer;
+                                gameOverFadeTotal = gameOverFadeFrames;
                                 // Damp player motion to let explosions play out
                                 player.vx = 0; player.vy = 0;
                             }
@@ -9735,6 +11275,11 @@
                             const gained = hasUpgradedClone ? 2 : 1;
                             player.cloneStock = Math.min(3, player.cloneStock + gained);
                             player.currentPowerup = 'clone';
+                        } else if (powerup.type === 'mine') {
+                            // Mines + 1 (in-run upgrade) grants +1 extra stock per pickup (cap 3)
+                            const gained = hasUpgradedMine ? 2 : 1;
+                            player.mineStock = Math.min(3, (player.mineStock | 0) + gained);
+                            player.currentPowerup = 'mine';
                         } else if (powerup.type === 'orbital') {
                             // Orbital gun spawns a temporary orbiting pet on use (no stock count)
                             player.currentPowerup = 'orbital';
@@ -9755,6 +11300,8 @@
             lives = 3;
             frameCount = 0;
             level = 1;
+            // Ensure any previous Bonus Level state is fully cleared for this new run
+            resetBonusState();
             // Reset UFO state
             ufo = null;
             ufoAppearedThisLevel = false;
@@ -9769,6 +11316,7 @@
             tetherPairs = [];
             bullets = [];
             particles = [];
+            if (particlesAbove && particlesAbove.length) particlesAbove.length = 0;
             powerups = [];
             stars = [];
             shootingStars = [];
@@ -9779,11 +11327,14 @@
             cometShower = null;
             cometShowerStreaks = [];
             mines = [];
+            playerMines = [];
             enemyBullets.length = 0;
             drones = [];
             laserTimer = 0;
             laserStart = null;
             laserEnd = null;
+            // Flush transient WebGL overlay artifacts between runs
+            try { if (glRenderer && glRenderer.clearTransient) glRenderer.clearTransient(); } catch (e) {}
             level2Spawned = false;
             level4Spawned = false;
             level5Spawned = false;
@@ -9856,6 +11407,7 @@
             hasUpgradedBomb = false;
             hasUpgradedLaser = false;
             hasUpgradedClone = false;
+            hasUpgradedMine = false;
             shieldRadiusMul = 1;
             shieldDurationMul = 1;
             fireRateMul = 1;
@@ -9863,6 +11415,7 @@
             player.bombCharges = 0;
             player.laserCharges = 0;
             player.cloneStock = 0;
+            player.mineStock = 0;
             cloneDrones = [];
             // Reset Orbital pets state
             orbitalPets = [];
@@ -10005,6 +11558,7 @@
             lastGameComboExpAwarded = 0;
             thisRunUnlockedRewards = [];
             // Ensure Gauntlet starts with fresh state regardless of previous mode
+            resetBonusState();
             score = 0;
             level = 1;
             pendingLevel = 0;
@@ -10015,9 +11569,12 @@
             try { bullets.length = 0; } catch (e) { bullets = []; }
             try { enemyBullets.length = 0; } catch (e) { enemyBullets = []; }
             try { particles.length = 0; } catch (e) { particles = []; }
+            try { if (particlesAbove && particlesAbove.length) particlesAbove.length = 0; } catch (e) { particlesAbove = []; }
             try { powerups.length = 0; } catch (e) { powerups = []; }
             try { drones.length = 0; } catch (e) { drones = []; }
             try { mines.length = 0; } catch (e) { mines = []; }
+            // Flush transient WebGL overlay artifacts when switching modes
+            try { if (glRenderer && glRenderer.clearTransient) glRenderer.clearTransient(); } catch (e) {}
             // Clear ALL hazards/effects so nothing leaks from a previous run
             try { gravityWells.length = 0; } catch (e) { gravityWells = []; }
             try { wormholes.length = 0; } catch (e) { wormholes = []; }
@@ -10041,6 +11598,7 @@
                 player.bombCharges = 0;
                 player.laserCharges = 0;
                 player.cloneStock = 0;
+                player.mineStock = 0;
                 player.shielded = 0;
                 player.invisible = 0;
                 player.teleporting = 0;
@@ -10138,6 +11696,8 @@
         function gameOver() {
             gameState = 'gameover';
             paused = false;
+            // Cancel any active bonus level immediately on death
+            resetBonusState();
             // Stop thrust loop if it was active
             try { audio.stopThrust(); } catch (e) {}
             const po = document.getElementById('pauseOverlay');
@@ -10221,6 +11781,8 @@
             if (goEl) goEl.classList.add('hidden');
             if (start) start.classList.remove('hidden');
             setHUDVisible(false);
+            // Clear any lingering bonus state when returning to menu
+            resetBonusState();
             // Stop any gameplay music and prepare to bring back intro
             try { stopGameMusic(250); } catch (e) {}
             // Stop Game Over music now that we're returning to menu
@@ -10263,6 +11825,11 @@
             // Ensure POWER-UP HUD is fully hidden/cleared on start screen
             const pu = document.getElementById('powerup');
             if (pu) { pu.classList.add('hidden'); pu.textContent = ''; }
+            // Clear gameplay particles to avoid accumulation across runs while on the start menu
+            if (typeof particles !== 'undefined' && particles && particles.length) particles.length = 0;
+            if (typeof particlesAbove !== 'undefined' && particlesAbove && particlesAbove.length) particlesAbove.length = 0;
+            // Also flush transient WebGL overlay artifacts when returning to menu
+            try { if (glRenderer && glRenderer.clearTransient) glRenderer.clearTransient(); } catch (e) {}
             gameState = 'start';
             // Reset any final victory sequence state
             finalVictoryPending = false;
@@ -10366,6 +11933,8 @@
             paused = false;
             const po = document.getElementById('pauseOverlay');
             if (po) po.classList.add('hidden');
+            // Clear any bonus state immediately when quitting to menu
+            resetBonusState();
             // Do not finalize EXP; explicitly clear any per-run tallies to avoid later leakage
             expGainedThisGame = 0;
             lastGameNewRewards = [];
@@ -10564,6 +12133,8 @@
                             label += ` x${Math.max(1, player.laserCharges)}`;
                         } else if (player.currentPowerup === 'clone') {
                             label += ` x${Math.max(1, player.cloneStock)}`;
+                        } else if (player.currentPowerup === 'mine') {
+                            label += ` x${Math.max(1, player.mineStock)}`;
                         }
                         parts.push(label);
                     }
@@ -10578,7 +12149,8 @@
                         invisible: '#f0f',
                         laser: '#f09',
                         clone: '#6ff',
-                        armor: '#0ff'
+                        armor: '#0ff',
+                        mine: '#fc0356'
                     };
                     const key = player.currentPowerup || 'armor';
                     powerupEl.style.color = colors[key];
@@ -11058,6 +12630,49 @@
             } else if (gameState === 'playing') {
                 // Decrement boss defeat freeze timer
                 if (bossDefeatFreeze > 0) bossDefeatFreeze--;
+                // Resolve pending bonus decision when freeze ends
+                if (bonusDecisionPending && bossDefeatFreeze === 0 && !bonusActive) {
+                    // 50% chance to play a bonus; then 50/50 which variant
+                    if (Math.random() < 0.99) {
+                        const which = (Math.random() < 0.5) ? 'big' : 'smalls';
+                        startBonusLevel(which);
+                    } else {
+                        bonusDecisionPending = false;
+                        pendingLevel = bonusNextLevel || Math.min(15, level + 1);
+                    }
+                }
+                // Update bonus timers and UI if active
+                if (bonusActive) {
+                    if (bonusTimer > 0) {
+                        bonusTimer--;
+                        const secs = Math.max(0, Math.ceil(bonusTimer / 60));
+                        const m = Math.floor(secs / 60);
+                        const s = secs % 60;
+                        const ss = (s < 10 ? '0' + s : '' + s);
+                        if (bonusIntroFrames > 0) {
+                            bonusIntroFrames--;
+                        } else {
+                            showHUDMessage && showHUDMessage(`TIME: ${m}:${ss}`, 12);
+                        }
+                        const chunksLeft = (bonusChunks && bonusChunks.length > 0);
+                        const smallsLeft = (bonusSmalls && bonusSmalls.length > 0);
+                        if (!bonusMain && !chunksLeft && !smallsLeft) {
+                            finishBonus(true);
+                        }
+                        if (bonusTimer === 0 && (bonusMain || chunksLeft || smallsLeft)) {
+                            finishBonus(false);
+                        }
+                    } else if (bonusResultTimer > 0) {
+                        bonusResultTimer--;
+                        if (bonusResultTimer === 0) {
+                            bonusActive = false;
+                            bonusDecisionPending = false;
+                            bonusMain = null; bonusChunks = [];
+                            levelMessageTimer = 0; levelMessageText = '';
+                            pendingLevel = bonusNextLevel;
+                        }
+                    }
+                }
                 // Final boss victory countdown -> Game Over screen
                 if (finalVictoryPending) {
                     if (finalVictoryTimer > 0) {
@@ -11205,7 +12820,8 @@
                     (score < 13000) ? 13 :
                     (score < 14000) ? 14 : 15;
                 // Start upgrade selection only on natural 1000-point thresholds (no boss bonus)
-                if (!bossActive && bossDefeatFreeze === 0 && !upgradePending && !deferUpgradeUntilStrandedGone) {
+                // Also suppress during bonus decision/active/result windows
+                if (!bossActive && bossDefeatFreeze === 0 && !bonusActive && !bonusDecisionPending && bonusResultTimer === 0 && !upgradePending && !deferUpgradeUntilStrandedGone) {
                     if (pendingLevel === 0 && targetLevel > level) {
                         // Normal progression by score threshold
                         const nextLevel = targetLevel;
@@ -11220,9 +12836,9 @@
                         }
                     }
                 }
-                // While a boss, upgrade, or boss-defeat freeze is active, keep current level.
-                // Otherwise, prefer any queued pendingLevel (from boss defeat), falling back to score target.
-                const newLevel = (bossActive || upgradePending || bossDefeatFreeze > 0)
+                // While a boss, upgrade, boss-defeat freeze, or bonus-level flow is active, keep current level.
+                // Otherwise, prefer any queued pendingLevel (from boss defeat or bonus), falling back to score target.
+                const newLevel = (bossActive || upgradePending || bossDefeatFreeze > 0 || bonusActive || bonusDecisionPending || bonusResultTimer > 0)
                     ? level
                     : (pendingLevel > 0 ? pendingLevel : targetLevel);
                 if (newLevel !== level) {
@@ -11780,6 +13396,15 @@
                     mines = mines.filter(m => !m.exploded);
                     mines.forEach(m => { m.update(level, gravityWells, canvas, applyGravityTo); m.draw(ctx); });
                 }
+                // Update and draw player-deployed mines
+                if (playerMines && playerMines.length > 0) {
+                    playerMines = playerMines.filter(pm => !pm.exploded);
+                    for (let i = 0; i < playerMines.length; i++) {
+                        const pm = playerMines[i];
+                        pm.update();
+                        pm.draw(ctx);
+                    }
+                }
                 
                 // Draw stranded ship (behind asteroids/bullets if desired)
                 if (strandedShip && strandedShip.active) {
@@ -11827,6 +13452,11 @@
                         return !pa.dead;
                     });
                 }
+                // Update and draw Bonus asteroid/chunks
+                if (bonusActive) {
+                    updateBonusObjects(canvas);
+                    drawBonusObjects(ctx);
+                }
                 
                 // Boss update/draw
                 if (bossActive && boss) {
@@ -11867,22 +13497,46 @@
                             chromaAberrationFrames = Math.max(chromaAberrationFrames, 3);
                             // Supernova rings and embers using Particle system (performance-light)
                             try {
-                                for (let i = 0; i < 3; i++) {
-                                    const ring = new Particle(bx, by, 0, 0, '#ffeeaa', 36 + i * 18);
-                                    ring.shape = 'ring';
-                                    ring.noWrap = true;
-                                    ring.growth = 12 + i * 8;
-                                    ring.thickness = 3;
-                                    ring.glow = 24;
-                                    particlesAbove.push(ring);
+                                // Supernova rings
+                                if (glRenderer && glRenderer.spawnShockwaveRing) {
+                                    glRenderer.spawnShockwaveRing(bx, by, 0xffeeaa, 36, 3, 1.06, 0.92);
+                                    glRenderer.spawnShockwaveRing(bx, by, 0xffeeaa, 54, 3, 1.05, 0.92);
+                                    glRenderer.spawnShockwaveRing(bx, by, 0xffeeaa, 72, 3, 1.04, 0.92);
+                                } else {
+                                    for (let i = 0; i < 3; i++) {
+                                        const ring = new Particle(bx, by, 0, 0, '#ffeeaa', 36 + i * 18);
+                                        ring.shape = 'ring';
+                                        ring.noWrap = true;
+                                        ring.growth = 12 + i * 8;
+                                        ring.thickness = 3;
+                                        ring.glow = 24;
+                                        particlesAbove.push(ring);
+                                    }
                                 }
                                 // Dissolve glitter
-                                for (let i = 0; i < 40; i++) {
-                                    const a = Math.random() * Math.PI * 2;
-                                    const sp = 1 + Math.random() * 2.5;
-                                    const p = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, '#ffddaa', 60 + (Math.random() * 30 | 0));
-                                    p.shape = 'diamond'; p.noWrap = true; p.glow = 14; p.radius = 2 + Math.random() * 2;
-                                    particlesAbove.push(p);
+                                if (glRenderer && glRenderer.spawnAboveDiamond) {
+                                    for (let i = 0; i < 40; i++) {
+                                        const a = Math.random() * Math.PI * 2;
+                                        const sp = 1 + Math.random() * 2.5;
+                                        glRenderer.spawnAboveDiamond(
+                                            bx,
+                                            by,
+                                            0xffddaa,
+                                            3,
+                                            Math.cos(a) * sp,
+                                            Math.sin(a) * sp,
+                                            60 + (Math.random() * 30 | 0),
+                                            1.0
+                                        );
+                                    }
+                                } else {
+                                    for (let i = 0; i < 40; i++) {
+                                        const a = Math.random() * Math.PI * 2;
+                                        const sp = 1 + Math.random() * 2.5;
+                                        const p = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, '#ffddaa', 60 + (Math.random() * 30 | 0));
+                                        p.shape = 'diamond'; p.noWrap = true; p.glow = 14; p.radius = 2 + Math.random() * 2;
+                                        particlesAbove.push(p);
+                                    }
                                 }
                             } catch (e) {}
                         } else {
@@ -11892,6 +13546,10 @@
                             try { startAmbientForLevel(level); } catch (e) {}
                             // Queue next level transition without forcing an upgrade offer
                             pendingLevel = Math.min(15, level + 1);
+                            // Mark that we should decide on a bonus level once freeze ends (levels 4, 8, 10, 12)
+                            if (level === 4 || level === 8 || level === 10 || level === 12) {
+                                bonusDecisionPending = true;
+                            }
                             levelMessageTimer = 240;
                             levelMessageText = 'Boss defeated!';
                             // Short cinematic beats
@@ -11907,9 +13565,23 @@
                                     const a = Math.random() * Math.PI * 2;
                                     const sp = 2 + Math.random() * 3;
                                     const col = '#aaccff';
-                                    const s = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, col, 45 + (Math.random() * 20 | 0));
-                                    s.shape = 'shard'; s.noWrap = true; s.glow = 16; s.length = 18 + Math.random() * 14; s.thickness = 2;
-                                    particlesAbove.push(s);
+                                    if (glRenderer && glRenderer.spawnAboveShard) {
+                                        const len = 18 + Math.random() * 14;
+                                        glRenderer.spawnAboveShard(
+                                            bx,
+                                            by,
+                                            0xaaccff,
+                                            len,
+                                            Math.cos(a) * sp,
+                                            Math.sin(a) * sp,
+                                            45 + (Math.random() * 20 | 0),
+                                            1.0
+                                        );
+                                    } else {
+                                        const s = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, col, 45 + (Math.random() * 20 | 0));
+                                        s.shape = 'shard'; s.noWrap = true; s.glow = 16; s.length = 18 + Math.random() * 14; s.thickness = 2;
+                                        particlesAbove.push(s);
+                                    }
                                 }
                                 // Boss-specific quick flair
                                 const flair = (name) => {
@@ -11923,9 +13595,51 @@
                                     const a = Math.random() * Math.PI * 2;
                                     const sp = 1.5 + Math.random() * 2.2;
                                     const c = flair(bossName);
-                                    const p = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, c, 50 + (Math.random() * 20 | 0));
-                                    p.shape = 'diamond'; p.noWrap = true; p.glow = 12; p.radius = 2 + Math.random() * 2;
-                                    particlesAbove.push(p);
+                                    if (glRenderer && glRenderer.spawnAboveDiamond) {
+                                        glRenderer.spawnAboveDiamond(
+                                            bx,
+                                            by,
+                                            parseInt((c || '#ffffff').replace('#','0x')) || 0xffffff,
+                                            3,
+                                            Math.cos(a) * sp,
+                                            Math.sin(a) * sp,
+                                            50 + (Math.random() * 20 | 0),
+                                            1.0
+                                        );
+                                    } else {
+                                        const p = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, c, 50 + (Math.random() * 20 | 0));
+                                        p.shape = 'diamond'; p.noWrap = true; p.glow = 12; p.radius = 2 + Math.random() * 2;
+                                        particlesAbove.push(p);
+                                    }
+                                }
+                                // Dissolve glitter burst (diamond glitter) for non-final bosses as well
+                                {
+                                    const c = flair(bossName);
+                                    const cNum = parseInt((c || '#ffffff').replace('#','0x')) || 0xffffff;
+                                    if (glRenderer && glRenderer.spawnAboveDiamond) {
+                                        for (let i = 0; i < 36; i++) {
+                                            const a = Math.random() * Math.PI * 2;
+                                            const sp = 1.0 + Math.random() * 2.3;
+                                            glRenderer.spawnAboveDiamond(
+                                                bx,
+                                                by,
+                                                cNum,
+                                                3,
+                                                Math.cos(a) * sp,
+                                                Math.sin(a) * sp,
+                                                52 + (Math.random() * 26 | 0),
+                                                1.0
+                                            );
+                                        }
+                                    } else {
+                                        for (let i = 0; i < 36; i++) {
+                                            const a = Math.random() * Math.PI * 2;
+                                            const sp = 1.0 + Math.random() * 2.3;
+                                            const p = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, c, 52 + (Math.random() * 26 | 0));
+                                            p.shape = 'diamond'; p.noWrap = true; p.glow = 14; p.radius = 2 + Math.random() * 2;
+                                            particlesAbove.push(p);
+                                        }
+                                    }
                                 }
                             } catch (e) {}
                         }
@@ -12365,19 +14079,36 @@
                             const vx = nx * speed + ux * (Math.random() * 0.4) + jitter;
                             const vy = ny * speed + uy * (Math.random() * 0.4) + jitter;
                             const life = 16 + Math.floor(Math.random() * 14);
-                            const p = new Particle(
-                                bx,
-                                by,
-                                vx,
-                                vy,
-                                beamColor,
-                                life
-                            );
-                            p.shape = 'dot';
-                            p.radius = 0.9 + Math.random() * 1.4;
-                            p.glow = 14 + Math.random() * 10;
-                            p.noWrap = true; // allow offscreen culling
-                            if (particlesAbove) particlesAbove.push(p); else particles.push(p);
+                            if (glRenderer && glRenderer.spawnAboveDot) {
+                                // Convert CSS hex color (e.g. #f09 or #ff0099) to numeric tint
+                                let colNum = 0xff66ff;
+                                if (typeof beamColor === 'string' && beamColor[0] === '#') {
+                                    if (beamColor.length === 4) {
+                                        const r = beamColor[1];
+                                        const g = beamColor[2];
+                                        const b = beamColor[3];
+                                        colNum = parseInt('0x' + r + r + g + g + b + b);
+                                    } else {
+                                        colNum = parseInt(beamColor.replace('#','0x')) || 0xff66ff;
+                                    }
+                                }
+                                const radius = 1.2 + Math.random() * 0.8;
+                                glRenderer.spawnAboveDot(bx, by, colNum, radius, vx, vy, life, 1.0);
+                            } else {
+                                const p = new Particle(
+                                    bx,
+                                    by,
+                                    vx,
+                                    vy,
+                                    beamColor,
+                                    life
+                                );
+                                p.shape = 'dot';
+                                p.radius = 0.9 + Math.random() * 1.4;
+                                p.glow = 14 + Math.random() * 10;
+                                p.noWrap = true; // allow offscreen culling
+                                if (particlesAbove) particlesAbove.push(p); else particles.push(p);
+                            }
                         }
                     } catch (e) { /* fail-safe */ }
 
@@ -12408,26 +14139,26 @@
                 drawFloatingTexts();
                 
                 // Level 7: periodically trickle in normal asteroids to keep a small presence (classic only)
-                if (gameMode !== 'gauntlet' && !bossActive && gameSubstate !== 'boss_intro' && level === 7 && frameCount % 240 === 0) {
+                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro' && level === 7 && frameCount % 240 === 0) {
                     if (countNormalAsteroids() < 2) {
                         spawnOffscreenNormalAsteroid();
                     }
                 }
                 // Level 11: continuously trickle in normal asteroids to maintain flow (classic only)
-                if (gameMode !== 'gauntlet' && !bossActive && gameSubstate !== 'boss_intro' && level === 11 && frameCount % 180 === 0) {
+                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro' && level === 11 && frameCount % 180 === 0) {
                     if (countNormalAsteroids() < 4) {
                         spawnOffscreenNormalAsteroid();
                     }
                 }
                 // Level 14: maintain a heavier baseline of normal asteroids (classic only)
-                if (gameMode !== 'gauntlet' && !bossActive && gameSubstate !== 'boss_intro' && level === 14 && frameCount % 150 === 0) {
+                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro' && level === 14 && frameCount % 150 === 0) {
                     if (countNormalAsteroids() < 6) {
                         spawnOffscreenNormalAsteroid();
                     }
                 }
                 
-                // Spawn new asteroids off-screen if all destroyed (disabled during boss and intro) — classic only
-                if (gameMode !== 'gauntlet' && !bossActive && gameSubstate !== 'boss_intro' && (asteroids.length + phasedAsteroids.length) === 0) {
+                // Spawn new asteroids off-screen if all destroyed (disabled during boss, bonus, defeat freeze, and intro) — classic only
+                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro' && (asteroids.length + phasedAsteroids.length) === 0) {
                     const numAsteroids = Math.min(4 + Math.floor(score / 1000), 8);
                     for (let i = 0; i < numAsteroids; i++) {
                         if (level === 6) {
@@ -12466,8 +14197,8 @@
                     }
                 }
                 
-                // Spawn armored asteroid every 500 points (disabled during boss, intro, and levels 6-7) — classic only
-                if (gameMode !== 'gauntlet' && !bossActive && gameSubstate !== 'boss_intro' && level !== 6 && level !== 7 && score > 0 && score % 500 === 0 && frameCount % 60 === 0) {
+                // Spawn armored asteroid every 500 points (disabled during boss, defeat freeze, bonus, intro, and levels 6-7) — classic only
+                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro' && level !== 6 && level !== 7 && score > 0 && score % 500 === 0 && frameCount % 60 === 0) {
                     let x, y;
                     do {
                         x = Math.random() * canvas.width;
@@ -12768,7 +14499,7 @@
         }
         function updateCrtToggleButton() {
             const btn = document.getElementById('crtToggleBtn');
-            if (btn) btn.textContent = 'CRT: ' + (crtEnabled ? 'ON' : 'OFF');
+            if (btn) btn.textContent = 'CRT Effect: ' + (crtEnabled ? 'ON' : 'OFF');
         }
         function updateFullscreenScaleButton() {
             const btn = document.getElementById('fullscreenScaleBtn');

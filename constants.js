@@ -46,7 +46,7 @@ export const MINE_COUNT = 7;
 export const MINE_RADIUS = 18;
 export const MINE_DRIFT_SPEED = 0.7;
 export const MINE_TRIGGER_RADIUS = 95; // proximity fuse
-export const MINE_SHOCKWAVE_RADIUS = 240; // push radius
+export const MINE_SHOCKWAVE_RADIUS = 240; // push radius (doubled)
 export const MINE_PUSH_STRENGTH = 9.0; // impulse strength
 export const MINE_BOUNCE_RESTITUTION = 0.9;
 

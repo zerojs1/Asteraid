@@ -233,10 +233,18 @@ export class Bullet {
       const n = this._trail.length;
       ctx.save();
       ctx.lineCap = 'round';
-      for (let i = 0; i < n - 1; i++) {
+      // If this is an Arc Blade bullet, shorten visible trail to ~60%.
+      // Clamp counts and indices to avoid negative indices on small trails.
+      const maxSegments = n - 1;
+      let lastCount = this.arcBlade ? Math.round(maxSegments * 0.4) : maxSegments;
+      lastCount = Math.max(1, Math.min(maxSegments, lastCount));
+      const startIndex = Math.max(0, n - 1 - lastCount);
+      for (let i = startIndex; i < n - 1; i++) {
         const p0 = this._trail[i + 1];
         const p1 = this._trail[i];
-        const t = i / (n - 1);
+        if (!p0 || !p1) continue;
+        const localIdx = i - startIndex;
+        const t = lastCount > 0 ? (localIdx / lastCount) : 0; // 0..1 along shortened segment
         // Quadratic fade for smoother tail
         const alpha = (1 - t) * (1 - t) * 0.7;
         const blur = 2 + (1 - t) * 10;
@@ -254,7 +262,8 @@ export class Bullet {
       ctx.restore();
     }
 
-    if (ENABLE_SPRITE_CACHE) {
+    // For Arc Blade bullets, bypass sprite cache to honor per-bullet length scaling
+    if (ENABLE_SPRITE_CACHE && !this.arcBlade) {
       const sprite = getBulletSprite(this.chargeLevel, this.radius, this.color, this.variant || 'classic');
       const angle = Math.atan2(this.vy, this.vx);
       ctx.save();
@@ -343,7 +352,17 @@ export class Bullet {
     }
     // Fallback: draw procedurally with variants
     const v = this.variant || 'classic';
-    const len = this.chargeLevel === 0 ? 14 : (this.chargeLevel === 1 ? 26 : 32);
+    const lenBase = this.chargeLevel === 0 ? 14 : (this.chargeLevel === 1 ? 26 : 32);
+    // Length adjustments:
+    // - Arc Blade bullets: shorten to ~60% (handled here)
+    // - Normal flak bullets: extend to ~140% for a punchier look
+    let len = lenBase;
+    if (this.arcBlade) {
+      len = Math.max(4, Math.round(lenBase * 0.3));
+    } else if (v === 'flak') {
+      // Reduce normal flak length by ~25% from previous boost (1.4x -> 1.05x)
+      len = Math.round(lenBase * 1.05);
+    }
     const trailBlur = this.chargeLevel === 0 ? 10 : (this.chargeLevel === 1 ? 18 : 22);
     const lineWidth = this.chargeLevel === 0 ? 2.5 : (this.chargeLevel === 1 ? 4 : 5);
     const coreBlur = this.chargeLevel === 0 ? 12 : (this.chargeLevel === 1 ? 22 : 26);
@@ -364,10 +383,29 @@ export class Bullet {
       ctx.shadowColor = this.color; ctx.shadowBlur = Math.max(coreBlur, 22);
       ctx.fillStyle = this.color;
       ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
+      // Extra head glow to match Arc Blade punch (color-consistent), only for normal flak
+      if (!this.arcBlade) {
+        ctx.save();
+        // Stronger additive-like glow pass
+        ctx.globalAlpha = 0.95;
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur = Math.max(coreBlur + 8, 26);
+        ctx.fillStyle = this.color;
+        ctx.beginPath(); ctx.arc(0, 0, Math.max(this.radius * 1.05, this.radius + 0.5), 0, Math.PI * 2); ctx.fill();
+        // Soft halo ring around the head
+        ctx.globalAlpha = 0.7;
+        ctx.shadowBlur = Math.max(coreBlur + 10, 28);
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = Math.max(0.9, this.radius * 0.55);
+        ctx.beginPath(); ctx.arc(0, 0, Math.max(this.radius * 1.2, this.radius + 1.5), 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
       // subtle local tail
       ctx.strokeStyle = this.color; ctx.shadowBlur = Math.max(8, trailBlur);
       ctx.lineWidth = Math.max(2, lineWidth);
-      ctx.beginPath(); ctx.moveTo(-Math.max(10, len * 0.7), 0); ctx.lineTo(-2, 0); ctx.stroke();
+      // For normal flak bullets, extend the local tail; keep Arc Blade shorter
+      const flakTailMul = this.arcBlade ? 0.5 : 1.0;
+      ctx.beginPath(); ctx.moveTo(-Math.max(10, len * flakTailMul), 0); ctx.lineTo(-2, 0); ctx.stroke();
     } else if (v === 'dash') {
       const d = Math.max(6, len * 0.5);
       ctx.lineCap = 'round';

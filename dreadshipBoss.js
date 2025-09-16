@@ -47,6 +47,8 @@ export class DreadshipBoss {
       });
     }
 
+  
+
     this.laserWarningTimer = 0;
     this.laserActiveTimer = 0;
     this.laserAngle = 0;
@@ -75,6 +77,7 @@ export class DreadshipBoss {
     // Laser embers
     this.laserEmbers = [];
     this.laserEmberSprite = null;
+    // Cached beam strip sprites are built in initSprites()
     // Core debris (small ash-like particles)
     this.coreDebris = [];
     this._coreDebrisPool = [];
@@ -92,6 +95,7 @@ export class DreadshipBoss {
     this.buildTurretGlowSprite();
     this.buildLaserEmberSprite();
     this.buildCoreDebrisSprite();
+    this.buildBeamStripSprites();
   }
 
   refreshIfDisplayChanged() {
@@ -345,6 +349,40 @@ export class DreadshipBoss {
     this.coreDebrisSprite = c;
   }
 
+  // Build DPR-aware beam strip sprites (warning and active) to replace per-frame stroked beams
+  buildBeamStripSprites() {
+    const make = (colorCore, colorGlow, height, outerAlpha = 1, innerAlpha = 0.95) => {
+      const pad = 28; // pad for baked glow
+      const w = 128 + pad * 2; // base width; stretched at draw time
+      const h = height + pad * 2;
+      const c = this.createOffscreen(w, h);
+      if (!c) return null;
+      const g = c.getContext('2d');
+      g.save();
+      g.scale(this.dpr, this.dpr);
+      g.translate(pad, h / 2);
+      g.globalCompositeOperation = 'lighter';
+      // Outer glow bar
+      g.shadowColor = colorGlow;
+      g.shadowBlur = 28;
+      g.globalAlpha = outerAlpha;
+      g.fillStyle = colorGlow;
+      g.fillRect(0, -height / 2, 128, height);
+      // Inner bright core
+      g.shadowBlur = 12;
+      g.globalAlpha = innerAlpha;
+      const innerH = Math.max(2, height * 0.5);
+      g.fillStyle = colorCore;
+      g.fillRect(0, -innerH / 2, 128, innerH);
+      g.restore();
+      return c;
+    };
+    // Warning (yellow) thinner
+    this._beamStripWarn = make('rgba(255,255,210,0.95)', '#ff0', 12, 0.8, 0.9);
+    // Active (red/white) thicker
+    this._beamStripActive = make('#ffffff', '#f66', 28, 1.0, 0.95);
+  }
+
   isDefeated() { return this.defeated; }
 
   turretPositions() {
@@ -404,6 +442,8 @@ export class DreadshipBoss {
         const posY = this.y + Math.sin(this.rotate + t.angle) * (this.hullRadius - 10);
         const base = Math.atan2(player.y - posY, player.x - posX);
         for (let i = -2; i <= 2; i++) enemyBullets.push(new EnemyBullet(posX, posY, base + i * 0.09, 5.5));
+        // SFX: boss turret volley
+        try { if (this.deps && typeof this.deps.playSfx === 'function') this.deps.playSfx('bossBullet'); } catch (e) {}
         t.fireCooldown = Math.floor((90 - Math.floor(20 * accel)) * 1.5);
       }
       // Record trail position each frame
@@ -427,8 +467,9 @@ export class DreadshipBoss {
       // Spawn red glowing embers that fly off the laser beam
       {
         const { canvas } = this.deps || {};
-        // Per-frame small batch for perf
-        const spawnCount = 3;
+        // Per-frame small batch for perf; throttle under load
+        const heavy = this.laserEmbers.length > 160;
+        const spawnCount = heavy ? 2 : 3;
         const dx = x2 - this.x, dy = y2 - this.y;
         const len = Math.hypot(dx, dy) || 1;
         const ux = dx / len, uy = dy / len;
@@ -444,14 +485,29 @@ export class DreadshipBoss {
             const margin = 50;
             if (sx < -margin || sy < -margin || sx > canvas.width + margin || sy > canvas.height + margin) continue;
           }
+          // Hard cap to prevent runaway (Canvas fallback path)
+          if (!(typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnAboveDot)) {
+            if (this.laserEmbers.length >= 220) break;
+          }
           // Velocity primarily perpendicular, slight forward drift
           const sign = Math.random() < 0.5 ? -1 : 1;
           const vPerp = (1.3 + Math.random() * 2.2) * sign;
-          const vAlong = 0.2 + Math.random() * 0.6;
+          const vAlong = 0.3 + Math.random() * 0.6;
           const vx = px * vPerp + ux * vAlong;
           const vy = py * vPerp + uy * vAlong;
           const life = 28 + Math.floor(Math.random() * 22);
-          this.laserEmbers.push({ x: sx, y: sy, vx, vy, life, maxLife: life });
+          // Spawn to WebGL overlay when available; fallback to Canvas particle array otherwise
+          try {
+            if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnAboveDot) {
+              const col = 0xff4444; // reddish ember
+              const radius = 1.9 + Math.random() * 1.0;
+              window.glRenderer.spawnAboveDot(sx, sy, col, radius, vx, vy, life, 1.0);
+            } else {
+              this.laserEmbers.push({ x: sx, y: sy, vx, vy, life, maxLife: life });
+            }
+          } catch (e) {
+            this.laserEmbers.push({ x: sx, y: sy, vx, vy, life, maxLife: life });
+          }
         }
       }
       if (this.laserActiveTimer === 0) {
@@ -465,6 +521,21 @@ export class DreadshipBoss {
         this.laserActiveTimer = 96;
         const aim = Math.atan2(player.y - this.y, player.x - this.x);
         this.laserAngle = aim - Math.PI * 0.7;
+        // SFX: laser activation
+        try { if (this.deps && typeof this.deps.playSfx === 'function') this.deps.playSfx('bossLaser'); } catch (e) {}
+        // Visual cue at core center: rings-only chromatic ring (no particles)
+        try {
+          const { createExplosion } = this.deps || {};
+          if (createExplosion) createExplosion(this.x, this.y, 120, '#f66', 'ringsOnly');
+        } catch (e) {}
+        // Overlay: a pair of chromatic rings if WebGL overlay is available
+        try {
+          if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnChromaticRing) {
+            const gl = window.glRenderer;
+            gl.spawnChromaticRing(this.x, this.y, 56, 2, 1.03, 0.94, 3);
+            gl.spawnChromaticRing(this.x, this.y, 100, 2, 1.02, 0.94, 4);
+          }
+        } catch (e) {}
         // Overlay: subtle heat-haze ripple at laser fire
         try {
           if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.pulseDistort) {
@@ -749,35 +820,65 @@ export class DreadshipBoss {
       }
     }
 
-    // Laser beam / warning
+    // Laser beam / warning (sprite-based, no per-frame shadowBlur strokes)
     if (this.laserWarningTimer > 0 || this.laserActiveTimer > 0) {
       const warn = this.laserWarningTimer > 0;
-      const color = warn ? '#ff0' : '#f66';
-      const width = warn ? 3 : 8;
       const a = warn ? (Math.atan2(player.y - this.y, player.x - this.x)) : this.laserAngle;
       const x2 = this.x + Math.cos(a) * 2000;
       const y2 = this.y + Math.sin(a) * 2000;
-      ctx.save();
-      // Outer beam bloom
-      ctx.strokeStyle = color; ctx.shadowColor = color; ctx.shadowBlur = warn ? 10 : 16; ctx.lineWidth = width; ctx.globalAlpha = warn ? 0.8 : 1;
-      ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(x2, y2); ctx.stroke();
-      // Inner core beam for crispness
-      ctx.strokeStyle = warn ? 'rgba(255,255,210,0.9)' : '#ffffff';
-      ctx.shadowColor = ctx.strokeStyle;
-      ctx.shadowBlur = warn ? 6 : 10;
-      ctx.lineWidth = warn ? 1.2 : 3;
-      ctx.globalAlpha = warn ? 0.9 : 0.95;
-      ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(x2, y2); ctx.stroke();
-      ctx.restore();
+      // Determine beam length to screen edges (approx by fixed far length)
+      const dx = x2 - this.x, dy = y2 - this.y;
+      const len = Math.hypot(dx, dy);
+      const spr = warn ? this._beamStripWarn : this._beamStripActive;
+      const heavy = this.laserEmbers && this.laserEmbers.length > 160;
+      if (spr) {
+        // Sprite path: optionally decimate under heavy load
+        if (!(heavy && (t & 1))) {
+          const dh = spr.height / this.dpr;
+          ctx.save();
+          ctx.translate(this.x, this.y);
+          ctx.rotate(a);
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = warn ? 0.9 : 1.0;
+          // Stretch sprite along beam direction from core outward
+          // Crop out the left baked glow pad so the beam visually starts at the core
+          const sprWpx = spr.width;               // device px
+          const coreWpx = 128 * this.dpr;         // base core span used when building
+          const padPx = Math.max(0, Math.floor((sprWpx - coreWpx) / 2));
+          const srcW = sprWpx - padPx;            // crop only left pad; keep right pad for tail
+          const srcH = spr.height;
+          // Destination: start at x=0 from core, full length
+          ctx.drawImage(spr, padPx, 0, srcW, srcH, 0, -dh / 2, len, dh);
+          ctx.restore();
+        }
+      } else {
+        // Fallback path: draw stroked beam so it always appears
+        const color = warn ? '#ff0' : '#f66';
+        const width = warn ? 3 : 8;
+        ctx.save();
+        // Outer beam bloom
+        ctx.strokeStyle = color; ctx.shadowColor = color; ctx.shadowBlur = warn ? 10 : 16; ctx.lineWidth = width; ctx.globalAlpha = warn ? 0.8 : 1;
+        ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(x2, y2); ctx.stroke();
+        // Inner core beam for crispness
+        ctx.strokeStyle = warn ? 'rgba(255,255,210,0.9)' : '#ffffff';
+        ctx.shadowColor = ctx.strokeStyle;
+        ctx.shadowBlur = warn ? 6 : 10;
+        ctx.lineWidth = warn ? 1.2 : 3;
+        ctx.globalAlpha = warn ? 0.9 : 0.95;
+        ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(x2, y2); ctx.stroke();
+        ctx.restore();
+      }
     }
 
     // Laser embers rendering (additive), drawn after beam
-    if (this.laserEmbers && this.laserEmbers.length) {
+    // Draw Canvas embers only when WebGL overlay embers are not used
+    if (!(typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnAboveDot) && this.laserEmbers && this.laserEmbers.length) {
       const { canvas } = this.deps || {};
       const sprite = this.laserEmberSprite;
       const prevOp = ctx.globalCompositeOperation;
       ctx.globalCompositeOperation = 'lighter';
-      for (let i = 0; i < this.laserEmbers.length; i++) {
+      const step = this.laserEmbers.length > 140 ? 2 : 1;
+      for (let i = 0; i < this.laserEmbers.length; i += step) {
         const e = this.laserEmbers[i];
         // Skip if outside view to save fill/draw calls
         if (canvas) {

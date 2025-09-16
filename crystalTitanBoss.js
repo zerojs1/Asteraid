@@ -89,6 +89,9 @@ export class CrystalTitanBoss {
     this.bladeLength = 300;        // logical length of blade for collision and sprite
     this.bladeHalfWidth = 18;      // half-thickness used for collision and visuals
     this.bladeSprite = null;       // cached sprite for the blade body + glow
+    // Offscreen trail canvas (optimization #2): draw trails once, composite once
+    this._bladeTrailCanvas = null;
+    this._bladeTrailCtx = null;
     // Facet dust (optional, light) during excursions
     this.facetDust = [];
     this._facetDustPool = [];
@@ -127,10 +130,16 @@ export class CrystalTitanBoss {
       // Invalidate dynamic cached sprites that depend on DPR
       this._beamSprite = null;
       this._beamDot = null;
+      // Recreate trail canvas on DPR change
+      this._bladeTrailCanvas = null;
+      this._bladeTrailCtx = null;
     }
     if (canvas && (canvas.width !== this._lastCanvasW || canvas.height !== this._lastCanvasH)) {
       this._lastCanvasW = canvas.width;
       this._lastCanvasH = canvas.height;
+      // Recreate trail canvas on size change
+      this._bladeTrailCanvas = null;
+      this._bladeTrailCtx = null;
     }
 
     // Decay invulnerability hit ping timer
@@ -217,6 +226,39 @@ export class CrystalTitanBoss {
     c.width = Math.ceil(width * this.dpr);
     c.height = Math.ceil(height * this.dpr);
     return c;
+  }
+
+  // Ensure offscreen trail canvas exists and matches viewport (optimization #2)
+  _ensureBladeTrailCanvas() {
+    const { canvas } = this.deps || {};
+    if (!canvas) return;
+    const needNew = !this._bladeTrailCanvas
+      || this._bladeTrailCanvas.width !== Math.ceil(canvas.width * this.dpr)
+      || this._bladeTrailCanvas.height !== Math.ceil(canvas.height * this.dpr);
+    if (needNew) {
+      this._bladeTrailCanvas = this.createOffscreen(canvas.width, canvas.height);
+      this._bladeTrailCtx = this._bladeTrailCanvas ? this._bladeTrailCanvas.getContext('2d') : null;
+      if (this._bladeTrailCtx) {
+        // Clear fully on create
+        this._bladeTrailCtx.save();
+        this._bladeTrailCtx.setTransform(1, 0, 0, 1, 0, 0);
+        this._bladeTrailCtx.globalCompositeOperation = 'source-over';
+        this._bladeTrailCtx.globalAlpha = 1;
+        this._bladeTrailCtx.clearRect(0, 0, this._bladeTrailCanvas.width, this._bladeTrailCanvas.height);
+        this._bladeTrailCtx.restore();
+      }
+    } else {
+      // No blades active: fully clear any lingering trail buffer to avoid ghosts
+      if (this._bladeTrailCanvas && this._bladeTrailCtx) {
+        const tctx = this._bladeTrailCtx;
+        tctx.save();
+        tctx.setTransform(1, 0, 0, 1, 0, 0);
+        tctx.globalCompositeOperation = 'source-over';
+        tctx.globalAlpha = 1;
+        tctx.clearRect(0, 0, this._bladeTrailCanvas.width, this._bladeTrailCanvas.height);
+        tctx.restore();
+      }
+    }
   }
 
   // Cached soft glow dot used for beam sparks
@@ -570,6 +612,7 @@ export class CrystalTitanBoss {
   update() {
     const { player, enemyBullets, EnemyBullet, setShake, getFrameCount, lineCircleCollision, onPlayerHit } = this.deps;
     const frame = getFrameCount();
+    const heavyOverlap = !!this.beam && this.blades && this.blades.length > 0; // (1) budget scaler trigger
     // Spin facets + manage excursions
     for (let f of this.facets) {
       f.angle += this.rotateSpeed;
@@ -693,20 +736,28 @@ export class CrystalTitanBoss {
         const b = this.blades[i];
         // Movement: pure radial outward, constant orientation
         b.x += b.vx; b.y += b.vy; b.trailTick++;
-        // Fast fade of main blade opacity
-        if (b.opacity !== undefined) b.opacity *= 0.9;
+        // (1) Adjust trail emission frequency dynamically under heavy overlap
+        b.trailEvery = heavyOverlap ? 14 : 9;
+        // Slow down fade of main blade opacity (~35% longer lifetime)
+        if (b.opacity !== undefined) b.opacity *= 0.925;
         if (b.trailTick % b.trailEvery === 0) {
           b.trail.push({ x: b.x, y: b.y, angle: b.angle, alpha: 1 });
         }
         // Rapidly decay trail alphas and prune to keep trails short and fast-fading
         if (b.trail && b.trail.length) {
           for (let k = 0; k < b.trail.length; k++) {
-            b.trail[k].alpha *= 0.2; // strong decay per frame
+            b.trail[k].alpha *= 0.27; // slower decay per frame (~35% longer persistence)
           }
           // remove old/transparent segments
           while (b.trail.length && b.trail[0].alpha < 0.06) b.trail.shift();
           // enforce very short trail length
-          if (b.trail.length > 1) b.trail.splice(0, b.trail.length - 5);
+          const maxTrail = heavyOverlap ? 3 : 5;
+          if (b.trail.length > 1) b.trail.splice(0, b.trail.length - maxTrail);
+        }
+        // Cull blade when nearly invisible to prevent lingering faint shapes
+        if (b.opacity !== undefined && b.opacity < 0.01) {
+          this.blades.splice(i, 1);
+          continue;
         }
         if (b.x < -margin || b.x > canvas.width + margin || b.y < -margin || b.y > canvas.height + margin) {
           this.blades.splice(i, 1); continue;
@@ -799,6 +850,19 @@ export class CrystalTitanBoss {
             this.beam = { sx: firePos.x, sy: firePos.y, ex, ey, startFrame: frame, duration: 45, fadeDuration: 30 };
             // Build beam offscreen sprite (glow baked) once for this shot
             this._buildBeamSprite(this.beam);
+            // SFX: beam fire
+            try { if (this.deps && typeof this.deps.playSfx === 'function') this.deps.playSfx('bossLaser'); } catch (e) {}
+            // Medium chromatic ring shockwave at the firing facet
+            const { createExplosion } = this.deps || {};
+            if (createExplosion) createExplosion(firePos.x, firePos.y, 90, '#6cf', 'ringsOnly');
+            // Overlay chromatic rings (WebGL) if available
+            try {
+              if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnChromaticRing) {
+                const gl = window.glRenderer;
+                gl.spawnChromaticRing(firePos.x, firePos.y, 50, 2, 1.03, 0.94, 2);
+                gl.spawnChromaticRing(firePos.x, firePos.y, 86, 2, 1.02, 0.94, 3);
+              }
+            } catch (e) {}
             setShake(10, 4);
           }
           this.chargeActive = false;
@@ -832,23 +896,43 @@ export class CrystalTitanBoss {
           {
             // Always spawn 1, plus a probability for a 2nd based on beam length (preserves look for long beams)
             const len = Math.hypot(this.beam.ex - this.beam.sx, this.beam.ey - this.beam.sy);
-            const CAP = 60; // safety cap to avoid spikes (reduced for performance)
+            // (1) Reduce CAP and decimate spawns under heavy overlap
+            const CAP = heavyOverlap ? 30 : 60; // safety cap to avoid spikes (Canvas fallback only)
             const spawnOne = () => {
-              if (this.beamParticles.length >= CAP) return;
               const tpos = Math.random();
               const x = this.beam.sx + (this.beam.ex - this.beam.sx) * tpos;
               const y = this.beam.sy + (this.beam.ey - this.beam.sy) * tpos;
               const ang = Math.random() * Math.PI * 2;
               const sp = Math.random() * 1.6;
+              const vx = Math.cos(ang) * sp;
+              const vy = Math.sin(ang) * sp;
+              const life = 60;
+              const size = 2 + Math.random() * 2;
+              // WebGL overlay embers when available; fallback to pooled Canvas sparks
+              try {
+                if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnAboveDot) {
+                  const col = 0xffffff; // white spark to match previous
+                  window.glRenderer.spawnAboveDot(x, y, col, size, vx, vy, life, 1.0);
+                  return;
+                }
+              } catch (e) {}
+              if (this.beamParticles.length >= CAP) return;
               const p = this._beamParticlePool.pop() || {};
-              p.x = x; p.y = y; p.vx = Math.cos(ang) * sp; p.vy = Math.sin(ang) * sp;
-              p.life = 60; p.size = 2 + Math.random() * 2;
+              p.x = x; p.y = y; p.vx = vx; p.vy = vy;
+              p.life = life; p.size = size;
               this.beamParticles.push(p);
             };
-            spawnOne();
+            if (!(heavyOverlap && (frame & 1))) {
+              spawnOne();
+            }
             // Longer beams get more sparks; shorter beams fewer (0.3..0.7 range)
             const p2 = Math.max(0.3, Math.min(0.7, len / 600));
-            if (Math.random() < p2) spawnOne();
+            if (!heavyOverlap) {
+              if (Math.random() < p2) spawnOne();
+            } else {
+              // Under heavy overlap, halve the probability for the 2nd spawn
+              if (Math.random() < p2 * 0.5) spawnOne();
+            }
           }
         } else if (age <= this.beam.duration + (this.beam.fadeDuration || 60)) {
           // Fade period: keep beam for visuals only
@@ -1079,53 +1163,95 @@ export class CrystalTitanBoss {
       ctx.stroke();
       }
     }
-    // Frozen blades + trails
+    // Frozen blades + trails (optimized)
     if (this.blades && this.blades.length) {
-      for (const b of this.blades) {
-        // Trails
-        if (b.trail && b.trail.length) {
-          ctx.save();
-          // draw trails in normal blend with very low alpha to avoid extra glow
+      const fc = getFrameCount();
+      const heavyOverlap = !!this.beam && this.blades && this.blades.length > 0;
+      // Ensure and fade the offscreen trail canvas
+      this._ensureBladeTrailCanvas();
+      if (this._bladeTrailCanvas && this._bladeTrailCtx) {
+        const tctx = this._bladeTrailCtx;
+        tctx.save();
+        // Fade previous trail content (destination-in scales alpha by factor)
+        tctx.globalCompositeOperation = 'destination-in';
+        tctx.globalAlpha = 0.86; // retain ~86% per frame
+        tctx.fillRect(0, 0, this._bladeTrailCanvas.width, this._bladeTrailCanvas.height);
+        tctx.restore();
+        // Draw new trail segments this frame in normal blend with low alpha
+        for (const b of this.blades) {
+          if (!b.trail || b.trail.length === 0) continue;
+          if (heavyOverlap && (fc & 1)) continue; // decimate trail drawing under heavy overlap
           for (let j = 0; j < b.trail.length; j++) {
             const t = b.trail[j];
             const alpha = Math.min(0.05, 0.12 * (t.alpha || 0));
-            if (this.bladeSprite) {
-              const dw = this.bladeSprite.width / this.dpr;
-              const dh = this.bladeSprite.height / this.dpr;
-              ctx.save();
-              // Scale based on distance from core so arc grows to 2x while keeping curvature center at core
-              const dx = t.x - this.x, dy = t.y - this.y;
-              const dist = Math.max(1, Math.hypot(dx, dy));
-              const baseR = this._bladeBaseR || (this.coreRadius + 8);
-              const s = Math.max(1, Math.min(8.5, dist / baseR));
-              ctx.translate(this.x, this.y);
-              ctx.rotate(t.angle);
-              ctx.scale(s, s);
-              ctx.globalAlpha = alpha;
-              // offset so sprite's curvature center (-baseR,0) aligns to core origin
-              ctx.drawImage(this.bladeSprite, -dw / 2 + baseR, -dh / 2, dw, dh);
-              ctx.restore();
+            if (!this.bladeSprite || alpha <= 0) continue;
+            const dw = this.bladeSprite.width / this.dpr;
+            const dh = this.bladeSprite.height / this.dpr;
+            // Scale based on distance from core so arc grows to 2x while keeping curvature center at core
+            const dx = t.x - this.x, dy = t.y - this.y;
+            const dist = Math.max(1, Math.hypot(dx, dy));
+            const baseR = this._bladeBaseR || (this.coreRadius + 8);
+            const s = Math.max(1, Math.min(8.5, dist / baseR));
+            // Early culling for trail segment using simple AABB around core
+            const canvas = this.deps.canvas;
+            if (canvas) {
+              const approxW = dw * s, approxH = dh * s;
+              // Blade arc is centered around a point on a circle of radius dist; approximate center:
+              const radAng = t.angle - Math.PI / 2;
+              const cx0 = this.x + Math.cos(radAng) * dist;
+              const cy0 = this.y + Math.sin(radAng) * dist;
+              const margin = 32;
+              if (cx0 + approxW < -margin || cy0 + approxH < -margin || cx0 - approxW > canvas.width + margin || cy0 - approxH > canvas.height + margin) {
+                continue;
+              }
             }
+            tctx.save();
+            tctx.translate(this.x, this.y);
+            tctx.rotate(t.angle);
+            tctx.scale(s, s);
+            tctx.globalAlpha = alpha;
+            // offset so sprite's curvature center (-baseR,0) aligns to core origin
+            tctx.drawImage(this.bladeSprite, -dw / 2 + baseR, -dh / 2, dw, dh);
+            tctx.restore();
           }
-          ctx.restore();
         }
-        // Main blade
-        if (this.bladeSprite) {
-          const dw = this.bladeSprite.width / this.dpr;
-          const dh = this.bladeSprite.height / this.dpr;
-          ctx.save();
-          // Scale based on distance from core so arc grows to 2x while keeping curvature center at core
-          const dx = b.x - this.x, dy = b.y - this.y;
-          const dist = Math.max(1, Math.hypot(dx, dy));
-          const baseR = this._bladeBaseR || (this.coreRadius + 8);
-          const s = Math.max(1, Math.min(8.5, dist / baseR));
-          ctx.translate(this.x, this.y);
-          ctx.rotate(b.angle);
-          ctx.scale(s, s);
-          if (b.opacity !== undefined) ctx.globalAlpha = Math.max(0, Math.min(1, b.opacity));
-          ctx.drawImage(this.bladeSprite, -dw / 2 + baseR, -dh / 2, dw, dh);
-          ctx.restore();
+        // Composite trail canvas once
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over'; // keep trails subtle
+        ctx.globalAlpha = 1;
+        ctx.drawImage(this._bladeTrailCanvas, 0, 0, this._bladeTrailCanvas.width / this.dpr, this._bladeTrailCanvas.height / this.dpr);
+        ctx.restore();
+      }
+
+      // Draw main blades with early culling (opt #3)
+      for (const b of this.blades) {
+        if (!this.bladeSprite) continue;
+        const dw = this.bladeSprite.width / this.dpr;
+        const dh = this.bladeSprite.height / this.dpr;
+        // Scale based on distance from core so arc grows to 2x while keeping curvature center at core
+        const dx = b.x - this.x, dy = b.y - this.y;
+        const dist = Math.max(1, Math.hypot(dx, dy));
+        const baseR = this._bladeBaseR || (this.coreRadius + 8);
+        const s = Math.max(1, Math.min(8.5, dist / baseR));
+        // Early cull using bounding circle around arc center
+        const canvas = this.deps.canvas;
+        if (canvas) {
+          const radAng = b.angle - Math.PI / 2;
+          const cx0 = this.x + Math.cos(radAng) * dist;
+          const cy0 = this.y + Math.sin(radAng) * dist;
+          const R = 0.5 * Math.hypot(dw * s, dh * s);
+          const margin = 24;
+          if (cx0 + R < -margin || cy0 + R < -margin || cx0 - R > canvas.width + margin || cy0 - R > canvas.height + margin) {
+            continue;
+          }
         }
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(b.angle);
+        ctx.scale(s, s);
+        if (b.opacity !== undefined) ctx.globalAlpha = Math.max(0, Math.min(1, b.opacity));
+        ctx.drawImage(this.bladeSprite, -dw / 2 + baseR, -dh / 2, dw, dh);
+        ctx.restore();
       }
     }
     // Charging visuals: glowing hot white lines between shards (no sparks)
@@ -1133,7 +1259,11 @@ export class CrystalTitanBoss {
       const positions = this.facetPositions();
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      for (let pass = 0; pass < 2; pass++) {
+      // Draw only the thin pass on alternate frames to cut cost
+      const fc2 = getFrameCount();
+      const thinOnly = (fc2 & 1) === 1;
+      const startPass = thinOnly ? 1 : 0;
+      for (let pass = startPass; pass < 2; pass++) {
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = pass === 0 ? 6 : 2;
         ctx.shadowColor = '#ffffff';
@@ -1159,12 +1289,15 @@ export class CrystalTitanBoss {
       ctx.globalCompositeOperation = 'lighter';
       // Fade factor (matches previous)
       const ageDraw = getFrameCount() - this.beam.startFrame;
+      const fcBeam = getFrameCount();
+      const heavyOverlap = !!this.beam && this.blades && this.blades.length > 0;
+      const skipBeamThisFrame = heavyOverlap && (fcBeam & 1);
       let vis = 1;
       if (ageDraw > this.beam.duration) {
         const fd = this.beam.fadeDuration || 60;
         vis = Math.max(0, 1 - (ageDraw - this.beam.duration) / fd);
       }
-      if (this._beamSprite && this._beamSprite.canvas) {
+      if (!skipBeamThisFrame && this._beamSprite && this._beamSprite.canvas) {
         const spr = this._beamSprite;
         // Draw sprite centered on precomputed midpoint
         const midx = spr.midx;
@@ -1179,20 +1312,23 @@ export class CrystalTitanBoss {
       }
 
       // Beam sparks
-      // Use cached glow dot sprite (no per-particle shadowBlur)
-      if (!this._beamDot) this._beamDot = this._buildDot('#ffffff');
-      const dot = this._beamDot;
-      const canvas = this.deps.canvas;
-      const margin = 32;
-      const maxX = (canvas && canvas.width) ? canvas.width + margin : Infinity;
-      const maxY = (canvas && canvas.height) ? canvas.height + margin : Infinity;
-      for (const p of this.beamParticles) {
-        const a = Math.max(0, Math.min(1, p.life / 60));
-        if (a <= 0) continue;
-        if (canvas && (p.x < -margin || p.y < -margin || p.x > maxX || p.y > maxY)) continue; // frustum cull
-        const s = p.size * 1.0; // match prior visual scale
-        ctx.globalAlpha = a;
-        ctx.drawImage(dot, p.x - s, p.y - s, s * 2, s * 2);
+      // Draw Canvas beam sparks only when WebGL overlay embers are not used
+      if (!(typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnAboveDot)) {
+        // Use cached glow dot sprite (no per-particle shadowBlur)
+        if (!this._beamDot) this._beamDot = this._buildDot('#ffffff');
+        const dot = this._beamDot;
+        const canvas = this.deps.canvas;
+        const margin = 32;
+        const maxX = (canvas && canvas.width) ? canvas.width + margin : Infinity;
+        const maxY = (canvas && canvas.height) ? canvas.height + margin : Infinity;
+        for (const p of this.beamParticles) {
+          const a = Math.max(0, Math.min(1, p.life / 60));
+          if (a <= 0) continue;
+          if (canvas && (p.x < -margin || p.y < -margin || p.x > maxX || p.y > maxY)) continue; // frustum cull
+          const s = p.size * 1.0; // match prior visual scale
+          ctx.globalAlpha = a;
+          ctx.drawImage(dot, p.x - s, p.y - s, s * 2, s * 2);
+        }
       }
       ctx.restore();
     }

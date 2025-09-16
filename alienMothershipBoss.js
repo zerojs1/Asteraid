@@ -91,6 +91,8 @@ export class AlienMothershipBoss {
     this._lastDpr = this.dpr;
     this.hullBodySprite = null;      // main hull body sprite (elliptical with seams)
     this.hullSprite = null;          // outer hull glow rings sprite
+    this.coreUfoSprite = null;       // cached UFO-style core sprite (red saucer with white glow rim)
+    this.coreUfoSpriteSize = 0;
     this.nodeBaseSprites = {};       // key: hits (1..5) -> canvas
     this._nodeBaseRadius = (this.nodes[0] && this.nodes[0].radius) || 26;
     // Laser ember particles (pink) for node beams
@@ -147,6 +149,7 @@ export class AlienMothershipBoss {
     this.buildHullSprite();
     this.buildNodeBaseSprites();
     this.buildLaserEmberSprite();
+    this.buildCoreUfoSprite();
   }
 
   refreshIfDisplayChanged() {
@@ -287,6 +290,26 @@ export class AlienMothershipBoss {
     g.restore();
     g.globalAlpha = 1;
 
+    // New: subtle porthole lights around the hull rim to add perceived structure
+    g.save();
+    const lightCount = 24;
+    g.fillStyle = '#fff';
+    g.shadowColor = '#fff';
+    g.shadowBlur = 10;
+    for (let i = 0; i < lightCount; i++) {
+      const a = (i / lightCount) * Math.PI * 2;
+      const rL = rx * 0.88;
+      const lx = Math.cos(a) * rL;
+      const ly = Math.sin(a) * (ry * 0.88);
+      const alpha = 0.08 + (i % 3 === 0 ? 0.06 : 0);
+      g.globalAlpha = alpha;
+      g.beginPath();
+      g.arc(lx, ly, 3, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.restore();
+    g.globalAlpha = 1;
+
     g.restore();
     this.hullBodySprite = c;
   }
@@ -315,6 +338,92 @@ export class AlienMothershipBoss {
     g.restore();
     g.globalAlpha = 1; g.shadowBlur = 0;
     this.hullSprite = c;
+  }
+
+  buildCoreUfoSprite() {
+    // Build a red neon saucer (UFO-like), scaled to coreRadius, with a white glowing outline
+    const rimR = this.coreRadius * 0.85; // keep within core radius and leave room for glow
+    const margin = 20;
+    const size = (rimR + margin) * 2;
+    const c = this.createOffscreen(size, size);
+    if (!c) { this.coreUfoSprite = null; this.coreUfoSpriteSize = 0; return; }
+    const g = c.getContext('2d');
+    g.save();
+    g.scale(this.dpr, this.dpr);
+    g.translate(size / 2, size / 2);
+
+    // Primary rim rings (dark red neon) inspired by UFO enemy
+    for (let i = 3; i >= 0; i--) {
+      g.globalAlpha = i === 0 ? 1 : 0.7;
+      g.shadowBlur = 14 - i * 3;
+      g.shadowColor = '#8a1111';
+      g.strokeStyle = '#8a1111';
+      g.lineWidth = i === 0 ? 2.6 : 1.2;
+      g.beginPath();
+      g.arc(0, 0, rimR + i * 2, 0, Math.PI * 2);
+      g.stroke();
+    }
+
+    // Inner segmented ring
+    g.globalAlpha = 1;
+    g.shadowBlur = 0;
+    const innerR = rimR - 10;
+    const segs = 8;
+    for (let s = 0; s < segs; s++) {
+      const a0 = (s / segs) * Math.PI * 2 + 0.08;
+      const a1 = a0 + (Math.PI * 2) / segs - 0.16;
+      g.strokeStyle = '#b44';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.arc(0, 0, innerR, a0, a1);
+      g.stroke();
+    }
+
+    // Central core disk (dark red) with thin white outline
+    const coreR = Math.max(6, rimR * 0.35);
+    g.globalAlpha = 1;
+    g.shadowBlur = 0;
+    g.fillStyle = '#8a0000';
+    g.beginPath(); g.arc(0, 0, coreR, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#fff'; g.lineWidth = 2;
+    g.beginPath(); g.arc(0, 0, coreR, 0, Math.PI * 2); g.stroke();
+
+    // Radial fins
+    g.globalAlpha = 0.95;
+    g.shadowBlur = 10;
+    g.shadowColor = '#a22';
+    g.strokeStyle = '#a22';
+    g.lineWidth = 2.2;
+    const finCount = 6;
+    for (let k = 0; k < finCount; k++) {
+      const a = (k / finCount) * Math.PI * 2;
+      const x0 = Math.cos(a) * (innerR * 0.6);
+      const y0 = Math.sin(a) * (innerR * 0.6);
+      const x1 = Math.cos(a) * (rimR * 0.92);
+      const y1 = Math.sin(a) * (rimR * 0.92);
+      g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+    }
+
+    // White glowing outline (stronger thickness and glow)
+    g.globalAlpha = 1;
+    g.shadowBlur = 20;
+    g.shadowColor = '#ffffff';
+    g.strokeStyle = '#ffffff';
+    g.lineWidth = 3.4;
+    g.beginPath();
+    g.arc(0, 0, rimR + 3.6, 0, Math.PI * 2);
+    g.stroke();
+    // Secondary outer halo for extra punch
+    g.lineWidth = 1.8;
+    g.globalAlpha = 0.7;
+    g.beginPath();
+    g.arc(0, 0, rimR + 6.2, 0, Math.PI * 2);
+    g.stroke();
+    g.shadowBlur = 0; g.globalAlpha = 1;
+
+    g.restore();
+    this.coreUfoSprite = c;
+    this.coreUfoSpriteSize = size * this.dpr;
   }
 
   buildNodeBaseSprites() {
@@ -484,10 +593,27 @@ export class AlienMothershipBoss {
       const radius = 400; // larger than mines
       const strength = 9.5; // slightly stronger than mine shockwave
       if (applyShockwave) applyShockwave(this.x, this.y, radius, strength);
-      if (this.deps.createExplosion) this.deps.createExplosion(this.x, this.y, 120, '#ffee88');
+      if (this.deps.createExplosion) this.deps.createExplosion(this.x, this.y, 90, '#ffee88');
       if (this.deps.setShake) this.deps.setShake(12, 5);
       // Visual ring for ~0.6s
-      this.pulses.push({ age: 0, life: 36, maxRadius: radius });
+      const pulseLife = 36;
+      const pulse = { age: 0, life: pulseLife, maxRadius: radius, glowSprite: null };
+      // Overlay: soft red core glow attached to this pulse so it follows the core while active
+      try {
+        if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnSoftGlow) {
+          pulse.glowSprite = window.glRenderer.spawnSoftGlow(this.x, this.y, {
+            color: 0xff3333,
+            radius: 36,
+            innerScale: 0.15,
+            innerAlpha: 0.9,
+            outerAlpha: 0.28,
+            holdFrames: pulseLife,
+            fadeFrames: 14,
+            growth: 1.0,
+          });
+        }
+      } catch (e) {}
+      this.pulses.push(pulse);
       this.pulseCooldown = 300;
     }
 
@@ -544,6 +670,29 @@ export class AlienMothershipBoss {
         n.fireTimer = 0;
         n.aimX = player.x; // capture position at charge start
         n.aimY = player.y;
+        // Overlay: soft red glow on the charging node (hold 40f, fade 30f)
+        try {
+          if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnSoftGlow) {
+            const pos = this.nodePositions();
+            const idx = this.nodes.indexOf(n);
+            const p = pos && pos[idx];
+            if (p) {
+              // Hold for full charge duration so it persists through the charge
+              const s = window.glRenderer.spawnSoftGlow(p.x, p.y, {
+                color: 0xff3333,
+                radius: Math.max(4, (n.radius || 12) * 1.0),
+                innerScale: 0.35,
+                innerAlpha: 0.6,
+                outerAlpha: 0.18,
+                holdFrames: 40,
+                fadeFrames: 20,
+                growth: 1.0,
+              });
+              // Keep a reference so we can update its position during charge and clean it up on fire
+              n._softGlowSprite = s;
+            }
+          }
+        } catch (e) {}
       }
       this.nodeLaserCooldown = 105; // schedule next node charge ~30% sooner than before
     }
@@ -556,8 +705,38 @@ export class AlienMothershipBoss {
       if (n.hits <= 0) continue;
       if (n.chargeTimer > 0) {
         n.chargeTimer--;
+        // If we have a soft glow sprite, keep it following the moving/wobbling node
+        try {
+          if (n._softGlowSprite) {
+            n._softGlowSprite.position.set(p.x, p.y);
+          }
+        } catch (e) {}
         if (n.chargeTimer === 0) {
           n.fireTimer = 36; // ~0.6s beam
+          // On fire, gracefully fade out the soft glow if present
+          try {
+            if (n._softGlowSprite) {
+              n._softGlowSprite._fadeDelayFrames = 0;
+              n._softGlowSprite._linearFadeTotal = 12;
+            }
+          } catch (e) {}
+          // Overlay: pink particle burst when the battery beam fires (no chromatic rings)
+          try {
+            if (typeof window !== 'undefined' && window.glRenderer) {
+              if (window.glRenderer.pulseExplosion) window.glRenderer.pulseExplosion(70, p.x, p.y);
+              if (window.glRenderer.spawnSoftGlow) window.glRenderer.spawnSoftGlow(p.x, p.y, {
+                color: 0xff66cc,
+                radius: Math.max(8, (n.radius || 12) * 1.4),
+                innerScale: 0.25,
+                innerAlpha: 0.7,
+                outerAlpha: 0.22,
+                holdFrames: 16,
+                fadeFrames: 20,
+                growth: 1.02,
+              });
+            }
+          } catch (e) {}
+          n._softGlowSprite = null;
         }
       } else if (n.fireTimer > 0) {
         n.fireTimer--;
@@ -602,6 +781,27 @@ export class AlienMothershipBoss {
       if (this.deps.showHUDMessage) this.deps.showHUDMessage('CORE EXPOSED!', 180);
       // Kick off pressure phase immediately
       this.droneCooldown = 0;
+      // Spawn 6 red attack drones from off the left side, moving right toward the player (ignore caps)
+      try {
+        const { canvas, drones, AttackDrone, player } = this.deps;
+        if (drones && AttackDrone && canvas && player) {
+          const count = 6;
+          for (let i = 0; i < count; i++) {
+            const y = 20 + Math.random() * (canvas.height - 40);
+            const x = -30 - Math.random() * 50; // offscreen to the left
+            const d = new AttackDrone(x, y);
+            // Velocity toward player with slight variance; bias rightward
+            const dx = (player.x - x);
+            const dy = (player.y - y);
+            const dist = Math.hypot(dx, dy) || 1;
+            const baseSp = (d.maxSpeed || 2.2) * 1.2;
+            d.vx = (dx / dist) * baseSp;
+            d.vy = (dy / dist) * baseSp;
+            // Push into play immediately
+            drones.push(d);
+          }
+        }
+      } catch (e) {}
     }
 
     // Update pulse visuals
@@ -609,7 +809,22 @@ export class AlienMothershipBoss {
       for (let i = this.pulses.length - 1; i >= 0; i--) {
         const p = this.pulses[i];
         p.age++;
-        if (p.age >= p.life) this.pulses.splice(i, 1);
+        // Keep any attached soft glow following the core while the pulse is alive
+        try {
+          if (p.glowSprite) {
+            p.glowSprite.position.set(this.x, this.y);
+          }
+        } catch (e) {}
+        if (p.age >= p.life) {
+          // Graceful fade/cleanup of attached soft glow
+          try {
+            if (p.glowSprite) {
+              p.glowSprite._fadeDelayFrames = 0;
+              p.glowSprite._linearFadeTotal = 12;
+            }
+          } catch (e) {}
+          this.pulses.splice(i, 1);
+        }
       }
     }
 
@@ -671,37 +886,33 @@ export class AlienMothershipBoss {
       const dh = this.hullSprite.height / this.dpr;
       ctx.drawImage(this.hullSprite, this.x - dw / 2, this.y - dh / 2, dw, dh);
     }
-    // Inner core: player ship silhouette (2.5x), hot red fill + pale red outline with pulsing glow
+    // Inner core: UFO-style saucer sprite with white glowing outline, rotates with heading
     const glowPhase = (Math.sin(t * 0.2) * 0.5 + 0.5); // 0..1
-    const scale = 2.5;
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    // Rotate so the silhouette points along movement; defaults to left when stationary/phase 1
-    ctx.rotate(this.heading);
-    ctx.shadowColor = '#f55';
-    ctx.shadowBlur = 14 + glowPhase * 18;
-    // Fill (hot red)
-    ctx.fillStyle = '#d00';
-    ctx.beginPath();
-    ctx.moveTo(15 * scale, 0);
-    ctx.lineTo(-10 * scale, -10 * scale);
-    ctx.lineTo(-5 * scale, 0);
-    ctx.lineTo(-10 * scale, 10 * scale);
-    ctx.closePath();
-    ctx.fill();
-    // Outline (pale red)
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = '#ffb3b3';
-    ctx.stroke();
-    // Inner hot pulse
-    ctx.globalAlpha = 0.18 + glowPhase * 0.22;
-    ctx.shadowBlur = 24 + glowPhase * 20;
-    ctx.fillStyle = 'rgba(255,80,80,0.65)';
-    ctx.beginPath();
-    ctx.arc(0, 0, 10 + glowPhase * 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.restore();
+    if (!this.coreUfoSprite) this.buildCoreUfoSprite();
+    if (this.coreUfoSprite) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      // Rotate so the saucer faces movement heading
+      ctx.rotate(this.heading);
+      const dw = (this.coreUfoSprite.width / this.dpr);
+      const dh = (this.coreUfoSprite.height / this.dpr);
+      // Soft red core glow that breathes (reduced alpha so center appears less transparent)
+      ctx.globalAlpha = 0.12 + glowPhase * 0.16;
+      ctx.shadowColor = '#f55';
+      ctx.shadowBlur = 14 + glowPhase * 12;
+      // Draw cached UFO core sprite fully opaque on top (no alpha reduction)
+      const prevAlpha = ctx.globalAlpha;
+      ctx.globalAlpha = 1;
+      ctx.drawImage(this.coreUfoSprite, -dw / 2, -dh / 2, dw, dh);
+      // Central hot pulse dot (blink)
+      ctx.globalAlpha = 0.7 + glowPhase * 0.3;
+      ctx.shadowBlur = 14 + glowPhase * 10;
+      ctx.fillStyle = '#ff4444';
+      ctx.beginPath(); ctx.arc(0, 0, Math.max(3, this.coreRadius * 0.18), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
 
     ctx.shadowBlur = 0;
 

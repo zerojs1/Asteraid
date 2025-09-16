@@ -332,6 +332,12 @@ export class ColossusBoss {
             const cx = this.x + Math.cos(aNow) * rNow + (p.kx || 0) + (p.excX || 0);
             const cy = this.y + Math.sin(aNow) * rNow + (p.ky || 0) + (p.excY || 0);
             this.plateShockwaves.push({ x: cx, y: cy, age: 0, life: 30, maxRadius: 280 });
+            // Overlay chromatic ring (WebGL) at excursion burst point
+            try {
+              if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnChromaticRing) {
+                window.glRenderer.spawnChromaticRing(cx, cy, 56, 2, 1.03, 0.94, 2);
+              }
+            } catch (e) {}
             // Small shake and optional overlay pulse
             try {
               if (this.deps.setShake) this.deps.setShake(8, 3);
@@ -653,7 +659,7 @@ export class ColossusBoss {
       ctx.restore();
     }
     // Invulnerable-core hit indicator: brief cyan shield ring + X
-    if (this.plates.length > 0 && this.coreInvulnHitTimer > 0) {
+    if (this.plates.length > 0 && this.coreInvulnHitTimer > 0 && !(typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnShockwaveRing)) {
       const t = this.coreInvulnHitTimer / 12; // 0..1
       const ringR = this.coreRadius + 6 + (1 - t) * 4;
       ctx.save();
@@ -676,7 +682,8 @@ export class ColossusBoss {
       ctx.restore();
     }
     // Plate excursion shockwave visuals (additive rings)
-    if (this.plateShockwaves.length) {
+    // Draw Canvas rings only when WebGL overlay rings are not available
+    if (!(typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnShockwaveRing) && this.plateShockwaves.length) {
       ctx.save();
       // Draw in absolute screen space to avoid any prior translate/scale affecting positions
       if (typeof ctx.setTransform === 'function') ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1051,6 +1058,12 @@ export class ColossusBoss {
       const dx = bullet.x - this.x, dy = bullet.y - this.y;
       if (Math.sqrt(dx * dx + dy * dy) < this.coreRadius + bullet.radius) {
         this.coreInvulnHitTimer = 12; // brief indicator
+        // Overlay: cyan shield pulse ring on invuln hit
+        try {
+          if (typeof window !== 'undefined' && window.glRenderer && window.glRenderer.spawnShockwaveRing) {
+            window.glRenderer.spawnShockwaveRing(this.x, this.y, 0x00ffff, this.coreRadius + 8, 3, 1.04, 0.92);
+          }
+        } catch (e) {}
         return true; // consume bullet with no effect
       }
     }
