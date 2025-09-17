@@ -15,11 +15,13 @@ export class EnemyBullet {
     this.lifetime--;
     if (this.x < -20 || this.x > canvas.width + 20 || this.y < -20 || this.y > canvas.height + 20) this.lifetime = 0;
   }
-  draw(ctx) {
+  draw(ctx, rx = null, ry = null) {
     const sp = Math.hypot(this.vx, this.vy) || 1;
     const len = 16;
-    const tx = this.x - (this.vx / sp) * len;
-    const ty = this.y - (this.vy / sp) * len;
+    const dx = (rx == null) ? this.x : rx;
+    const dy = (ry == null) ? this.y : ry;
+    const tx = dx - (this.vx / sp) * len;
+    const ty = dy - (this.vy / sp) * len;
     ctx.save();
     ctx.lineCap = 'round';
     ctx.shadowColor = this.color;
@@ -28,12 +30,12 @@ export class EnemyBullet {
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(tx, ty);
-    ctx.lineTo(this.x, this.y);
+    ctx.lineTo(dx, dy);
     ctx.stroke();
     ctx.fillStyle = this.color;
     ctx.shadowBlur = 14;
     ctx.beginPath();
-    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.arc(dx, dy, this.radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }

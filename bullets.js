@@ -227,7 +227,7 @@ export class Bullet {
     }
   }
 
-  draw(ctx) {
+  draw(ctx, rx = null, ry = null) {
     // Draw long fading trail for flak variant in world coords (no transforms)
     if (this.variant === 'flak' && this._trail && this._trail.length > 1) {
       const n = this._trail.length;
@@ -266,8 +266,10 @@ export class Bullet {
     if (ENABLE_SPRITE_CACHE && !this.arcBlade) {
       const sprite = getBulletSprite(this.chargeLevel, this.radius, this.color, this.variant || 'classic');
       const angle = Math.atan2(this.vy, this.vx);
+      const dx = (rx == null) ? this.x : rx;
+      const dy = (ry == null) ? this.y : ry;
       ctx.save();
-      ctx.translate(this.x, this.y);
+      ctx.translate(dx, dy);
       ctx.rotate(angle);
       ctx.drawImage(sprite.img, -sprite.ax, -sprite.ay);
       // Durable Cannons overlay (style-only). Applied to bullets tagged by caller.
@@ -367,8 +369,10 @@ export class Bullet {
     const lineWidth = this.chargeLevel === 0 ? 2.5 : (this.chargeLevel === 1 ? 4 : 5);
     const coreBlur = this.chargeLevel === 0 ? 12 : (this.chargeLevel === 1 ? 22 : 26);
     const angle = Math.atan2(this.vy, this.vx);
+    const dx = (rx == null) ? this.x : rx;
+    const dy = (ry == null) ? this.y : ry;
     ctx.save();
-    ctx.translate(this.x, this.y);
+    ctx.translate(dx, dy);
     ctx.rotate(angle);
     if (v === 'classic') {
       ctx.lineCap = 'round';

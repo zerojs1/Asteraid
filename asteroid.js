@@ -137,7 +137,7 @@ export class Asteroid {
     }
   }
 
-  draw(ctx) {
+  draw(ctx, renderX = null, renderY = null, renderRot = null) {
     ctx.save();
     // Elite afterimage trail (draw behind) using pre-rendered sprite
     if (this.elite && this.trail && this.trail.length) {
@@ -172,8 +172,10 @@ export class Asteroid {
     }
 
     // Draw the main asteroid from sprite
-    ctx.translate(this.x, this.y);
-    ctx.rotate(this.rotation);
+    const dx = (renderX == null) ? this.x : renderX;
+    const dy = (renderY == null) ? this.y : renderY;
+    ctx.translate(dx, dy);
+    ctx.rotate((renderRot == null) ? this.rotation : renderRot);
     ctx.drawImage(this.spriteCanvas, -this.spriteHalfW, -this.spriteHalfH, this.spriteW, this.spriteH);
 
     // Draw armor plating dynamically (reflect current hits)

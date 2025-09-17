@@ -541,6 +541,7 @@
         .menu-button.kb-selected {
             border: 4px solid #fff !important;
             transform: scale(1.08);
+            background: linear-gradient(180deg, #f11fc4, #000000);
             box-shadow:
                 0 0 18px #fff,
                 0 0 36px #fff,
@@ -813,15 +814,34 @@
                     <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-top:6px;">
                         <button id="webglToggleBtn" class="menu-button" onclick="toggleWebGLSetting()">OpenGL: ON</button>
                         <button id="bloomToggleBtn" class="menu-button" onclick="toggleBloom()">Bloom: ON</button>
-                        <button id="colorGradeToggleBtn" class="menu-button" onclick="toggleColorGrade()">COLOUR GRADING: ON</button>
+                        <button id="renderCapToggleBtn" class="menu-button" onclick="toggleRenderCap()" title="Limits render frame pacing (simulation remains 60 Hz).">FPS limit: 60</button>
+
+                        <!--  <button id="colorGradeToggleBtn" class="menu-button" onclick="toggleColorGrade()">COLOUR GRADING: ON</button> -->
                         
                     </div>
                     <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-top:8px;">
                         <button id="crtToggleBtn" class="menu-button" onclick="toggleCRT()">CRT effect: ON</button>
                         <button id="fxaaToggleBtn" class="menu-button" onclick="toggleFXAA()">FXAA: OFF</button>
                         
-                        <button id="perfToggleBtn" class="menu-button" onclick="togglePerfStats()">Framerate: OFF</button>
+                        <button id="perfToggleBtn" class="menu-button" onclick="togglePerfStats()">Show FPS: OFF</button>
                     </div>
+                   
+                        <div style="display:flex; gap:12px; justify-content:center; align-items:center; flex-wrap:wrap; margin-top:6px;">
+                            <!--
+                            <label for="temporalSmoothingCheckbox" style="color:#0ff; font-weight:bold; letter-spacing:1px;">FPS Smoothing:</label>
+                            <input id="temporalSmoothingCheckbox" type="checkbox" class="menu-select" onchange="onTemporalSmoothingCheckboxChange(this.checked)" title="Adds subtle WebGL overlay feedback to reduce perceived judder below 60 FPS." />
+                            <label for="maxStepsSelect" style="color:#0ff; font-weight:bold; letter-spacing:1px;">Max Steps:</label>
+                            <select id="maxStepsSelect" class="menu-select" style="min-width:100px; padding:8px 10px;" onchange="onMaxStepsSelectChange(this.value)" title="Maximum simulation steps processed per frame to catch up under load (higher can reduce slowdowns but costs CPU).">
+                                <option value="1">1</option>
+                                <option value="2">2</option>
+                                <option value="3">3</option>
+                                <option value="4">4</option>
+                                <option value="5">5</option>
+                                <option value="6">6</option>
+                            </select>
+                            -->
+                        </div>
+                  
                     <!-- Controls remapping (above volume sliders) -->
                     <div id="controlsBindingPanel" class="summary-box" style="margin-top:12px;">
                         <div class="stat-label" style="margin-bottom:6px;">CONTROLS</div>
@@ -960,13 +980,118 @@
         // Single-flight scheduling for main loop to avoid multiple concurrent RAFs
         let gameLoopRAF = 0;
         let gameLoopTimer = 0;
+        // Simulation timing (fixed 60 Hz) with accumulator
+        const SIM_DT_MS = 1000 / 60;
+        const MAX_STEPS_PER_FRAME = 4; // safety cap for catch-up under load
+        let simFrameCount = 0;        // advances on simulation ticks only
+        let accumulatorMs = 0;
+        let lastTimestampMs = 0;
+        // Render pacing (cap) and temporal smoothing settings
+        const DEFAULT_FRAME_CAP_MS = 1000 / 60;
+        let currentFrameCapMs = DEFAULT_FRAME_CAP_MS; // dynamically derived from settings
+        let renderCapHz = 0; // 0=off, else 30|45|60
+        let temporalSmoothing = true;
+        // Armored spawn guard: ensure we only spawn once per 500-point threshold
+        let lastArmoredScoreSpawned = -1;
+        // Additional cooldown to prevent burst spawns on transitions
+        let armoredSpawnCooldown = 0; // in sim frames
+        function loadTimingSettings() {
+            try {
+                // Fixed 60 Hz sim switch is reserved for future toggles; currently always true
+                const sim60 = JSON.parse(localStorage.getItem('asteraidSim60') || 'true');
+                // Default render cap is now 60 if nothing is saved
+                const cap = (localStorage.getItem('asteraidRenderCap') || '60').toLowerCase();
+                const smooth = JSON.parse(localStorage.getItem('asteraidTemporalSmoothing') || 'true');
+                // Default max steps per frame is now 3 if nothing is saved
+                const maxStepsStored = parseInt(localStorage.getItem('asteraidMaxStepsPerFrame') || '3', 10);
+                temporalSmoothing = !!smooth;
+                renderCapHz = (cap === '45') ? 45 : (cap === '30') ? 30 : (cap === '60') ? 60 : 0;
+                currentFrameCapMs = renderCapHz ? (1000 / renderCapHz) : DEFAULT_FRAME_CAP_MS;
+                // Clamp max steps to sane bounds (1..6)
+                window.maxStepsPerFrame = Math.max(1, Math.min(6, isFinite(maxStepsStored) ? maxStepsStored : 3));
+            } catch (e) {
+                // Fallback defaults
+                renderCapHz = 60; temporalSmoothing = true; currentFrameCapMs = 1000 / 60; window.maxStepsPerFrame = 3;
+            }
+        }
+        loadTimingSettings();
+        function applyTimingSettingsToUI() {
+            try {
+                // Update render cap toggle button label
+                const rbtn = document.getElementById('renderCapToggleBtn');
+                if (rbtn) {
+                    const label = renderCapHz === 60 ? '60' : renderCapHz === 45 ? '45' : renderCapHz === 30 ? '30' : 'Off';
+                    rbtn.textContent = `FPS limit: ${label}`;
+                }
+                const ts = document.getElementById('temporalSmoothingCheckbox');
+                if (ts) ts.checked = !!temporalSmoothing;
+                const ms = document.getElementById('maxStepsSelect');
+                if (ms) ms.value = String(window.maxStepsPerFrame || 4);
+            } catch (e) {}
+        }
+
+        // Render Cap controls: toggle button and helpers
+        function updateRenderCapUI() {
+            try {
+                const rbtn = document.getElementById('renderCapToggleBtn');
+                if (rbtn) {
+                    const label = renderCapHz === 60 ? '60' : renderCapHz === 45 ? '45' : renderCapHz === 30 ? '30' : 'Off';
+                    rbtn.textContent = `FPS limit: ${label}`;
+                }
+            } catch (e) {}
+        }
+
+        function applyRenderCap(hz) {
+            try {
+                renderCapHz = hz || 0;
+                currentFrameCapMs = renderCapHz ? (1000 / renderCapHz) : DEFAULT_FRAME_CAP_MS;
+                // Persist
+                localStorage.setItem('asteraidRenderCap', renderCapHz ? String(renderCapHz) : 'off');
+                // Reset throttles for immediate effect
+                frameThrottleNext = 0;
+                attractThrottleNext = 0;
+                updateRenderCapUI();
+            } catch (e) {}
+        }
+
+        function toggleRenderCap() {
+            // Cycle Off -> 60 -> 45 -> 30 -> Off
+            const order = [60, 45, 30];
+            const cur = renderCapHz || 0;
+            const idx = order.indexOf(cur);
+            const next = order[(idx + 1) % order.length];
+            applyRenderCap(next);
+        }
+        function onRenderCapSelectChange(v) {
+            try { localStorage.setItem('asteraidRenderCap', String(v)); } catch (e) {}
+            const cap = (String(v) || 'off').toLowerCase();
+            renderCapHz = (cap === '45') ? 45 : (cap === '30') ? 30 : (cap === '60') ? 60 : 0;
+            currentFrameCapMs = renderCapHz ? (1000 / renderCapHz) : DEFAULT_FRAME_CAP_MS;
+        }
+        function onTemporalSmoothingCheckboxChange(checked) {
+            temporalSmoothing = !!checked;
+            try { localStorage.setItem('asteraidTemporalSmoothing', JSON.stringify(temporalSmoothing)); } catch (e) {}
+        }
+        function onMaxStepsSelectChange(v) {
+            const n = Math.max(1, Math.min(6, parseInt(v || '4', 10)));
+            window.maxStepsPerFrame = n;
+            try { localStorage.setItem('asteraidMaxStepsPerFrame', String(n)); } catch (e) {}
+        }
+        // Expose handlers for inline attributes (module scripts are scoped)
+        window.onRenderCapSelectChange = onRenderCapSelectChange;
+        window.onTemporalSmoothingCheckboxChange = onTemporalSmoothingCheckboxChange;
+        window.onMaxStepsSelectChange = onMaxStepsSelectChange;
+        // Expose render cap toggle/button handlers for inline onclick
+        window.toggleRenderCap = toggleRenderCap;
+        window.applyRenderCap = applyRenderCap;
+        window.updateRenderCapUI = updateRenderCapUI;
         function scheduleGameLoopNextFrame(delayMs = 0) {
             if (gameLoopRAF || gameLoopTimer) return; // already pending
             if (delayMs > 0.25) {
                 gameLoopTimer = setTimeout(() => {
                     gameLoopTimer = 0;
                     gameLoopRAF = requestAnimationFrame(gameLoop);
-                }, Math.min(delayMs, FRAME_CAP_MS));
+                }, Math.min(delayMs, currentFrameCapMs));
             } else {
                 gameLoopRAF = requestAnimationFrame(gameLoop);
             }
@@ -2339,6 +2464,7 @@
                     rewardsPreviewParticles.push(p);
                 }
             }
+
             // Enforce particle cap
             if (rewardsPreviewParticles.length > MAX_PREVIEW_PARTICLES) {
                 rewardsPreviewParticles.splice(0, rewardsPreviewParticles.length - MAX_PREVIEW_PARTICLES);
@@ -3769,7 +3895,7 @@
         let fireRateMul = 1;              // runtime multiplier from upgrades (stacks)
         // Durable Cannons power-up timer (frames); when >0 boosts normal fire rate and range
         let durableCannonsFrames = 0;
-        let lastNormalFireFrame = -9999;  // last frame a normal (non-triple) bullet was fired
+        let lastNormalFireFrame = -9999;  // last sim tick a normal (non-triple) bullet was fired
         const upgradeOverlay = document.getElementById('upgradeOverlay');
         const upgradeBtn1 = document.getElementById('upgradeBtn1');
         const upgradeBtn2 = document.getElementById('upgradeBtn2');
@@ -4314,6 +4440,7 @@
         let strandedShip = null; // object when active in level 2
         let strandedBonusGiven = false; // EXP bonus guard for successful evacuation
         let level2Spawned = false; // ensure spawn only once
+        let level3Spawned = false; // ensure spawn only once for level 3
         let level4Spawned = false; // ensure spawn only once for level 4
         let level4IntroStarted = false; // gate pre-fight intro sequence so it runs once
         let level5Spawned = false; // ensure spawn only once for level 5
@@ -4928,7 +5055,7 @@
                 },
                 onPlayerHit: () => { takePlayerHit(); },
                 SHARD_MINION_CAP,
-                getFrameCount: () => frameCount,
+                getFrameCount: () => simFrameCount,
                 addEXP: (amt, src) => addEXP(amt, src),
                 unlockReward: (id) => unlockReward(id),
             });
@@ -5069,7 +5196,7 @@
                     shakeIntensity = Math.max(shakeIntensity, intensity);
                 },
                 onPlayerHit: () => { takePlayerHit(); },
-                getFrameCount: () => frameCount,
+                getFrameCount: () => simFrameCount,
                 addEXP: (amt, src) => addEXP(amt, src),
                 unlockReward: (id) => unlockReward(id),
                 playSfx: (name, opts) => { try { audio.playSfx(name, opts); } catch (e) {} },
@@ -5211,7 +5338,7 @@
                     shakeIntensity = Math.max(shakeIntensity, intensity);
                 },
                 onPlayerHit: () => { takePlayerHit(); },
-                getFrameCount: () => frameCount,
+                getFrameCount: () => simFrameCount,
                 addEXP: (amt, src) => addEXP(amt, src),
                 unlockReward: (id) => unlockReward(id),
             });
@@ -5297,7 +5424,7 @@
                     shakeIntensity = Math.max(shakeIntensity, intensity);
                 },
                 onPlayerHit: () => { takePlayerHit(); },
-                getFrameCount: () => frameCount,
+                getFrameCount: () => simFrameCount,
                 addEXP: (amt, src) => addEXP(amt, src),
                 unlockReward: (id) => unlockReward(id),
             });
@@ -5409,7 +5536,7 @@
                     shakeIntensity = Math.max(shakeIntensity, intensity);
                 },
                 onPlayerHit: () => { takePlayerHit(); },
-                getFrameCount: () => frameCount,
+                getFrameCount: () => simFrameCount,
                 addEXP: (amt, src) => addEXP(amt, src),
                 unlockReward: (id) => unlockReward(id),
             });
@@ -5798,7 +5925,7 @@
         // UFO special enemy (once per level, lives==1 only, no boss, 3-minute cooldown between appearances)
         let ufo = null;
         let ufoAppearedThisLevel = false;
-        let ufoNextAllowedFrame = 0; // global cooldown gate (frameCount threshold)
+        let ufoNextAllowedFrame = 0; // global cooldown gate (simFrameCount threshold)
         let ufoLevelTag = 0; // track level to reset per-level flag on change
         let companionRespawnTimer = 0;
         // Screen shake effect
@@ -5844,8 +5971,6 @@
             // Create a detonation record to drive damaging ring spawns for 60f and visual presence up to 120f
             const det = { x: cx, y: cy, age: 0, maxR: 195 }; // visuals expand to this radius
             rainbowDetonations.push(det);
-            // Apply one-hit AoE damage immediately (keep visuals expanding only)
-            try { applyRainbowDetonationOneShot(cx, cy, det.maxR); } catch (e) {}
             // SFX
             try { audio.playSfx('rainbow'); } catch (e) {}
             // WebGL overlay: spawn multiple chromatic shockwave rings for a rich rainbow look
@@ -5871,6 +5996,9 @@
                     }
                 }
             } catch (e) {}
+            // Apply one-hit AoE damage immediately (keep visuals expanding only)
+            try { applyRainbowDetonationOneShot(cx, cy, det.maxR); } catch (e) {}
+
         }
 
         // In-place filter utility to preserve array references
@@ -7547,7 +7675,7 @@
                     comboBonusPercent,
                     currentComboBonusTotal,
                     maxComboBonusTotal,
-                    frameCount,
+                    frameCount: simFrameCount,
                     score,
                     hiScore,
                     hiGlowTimer,
@@ -7598,8 +7726,8 @@
            // }
         }
         
-        // Draw player ship
-        function drawPlayer() {
+        // Draw player ship (renderX/renderY are interpolated positions; renderAngle is interpolated angle)
+        function drawPlayer(renderX, renderY, renderAngle) {
             // On pending game over (final death delay), do not draw the ship
             if (pendingGameOver) return;
             // During respawn delay, hide the ship entirely
@@ -7625,8 +7753,8 @@
                     const s = 1 + (baseScale - 1) * (1 + i * 0.12);
                     const alpha = 0.06 + (i * 0.06);
                     ctx.save();
-                    ctx.translate(player.x, player.y);
-                    ctx.rotate(player.angle);
+                    ctx.translate(renderX, renderY);
+                    ctx.rotate(renderAngle);
                     ctx.scale(s, s);
                     ctx.globalAlpha = alpha;
                     ctx.drawImage(sprite, -sw / 2, -sh / 2);
@@ -7634,8 +7762,8 @@
                 }
                 // Core oversized pass
                 ctx.save();
-                ctx.translate(player.x, player.y);
-                ctx.rotate(player.angle);
+                ctx.translate(renderX, renderY);
+                ctx.rotate(renderAngle);
                 ctx.scale(baseScale, baseScale);
                 ctx.globalAlpha = 0.35;
                 ctx.drawImage(sprite, -sw / 2, -sh / 2);
@@ -7754,8 +7882,8 @@
             }
 
             ctx.save();
-            ctx.translate(player.x, player.y);
-            ctx.rotate(player.angle);
+            ctx.translate(renderX, renderY);
+            ctx.rotate(renderAngle);
             
             // Set color based on state (apply skin color, then charge overrides)
             let color = player.color;
@@ -8773,7 +8901,7 @@
                         const rateMul = fireRateMul * (durableCannonsFrames > 0 ? 2.0 : 1);
                         const effBps = Math.min(MAX_FIRE_RATE_BPS, BASE_FIRE_RATE_BPS * Math.max(0.01, rateMul));
                         const minIntervalFrames = Math.max(1, Math.round(60 / effBps));
-                        canFire = (frameCount - lastNormalFireFrame) >= minIntervalFrames;
+                        canFire = (simFrameCount - lastNormalFireFrame) >= minIntervalFrames;
                     }
                     if (canFire) {
                         const b = new Bullet(
@@ -8802,7 +8930,7 @@
                             b.durableFx = true; // enable durable overlay in bullets.js draw()
                         }
                         bullets.push(b);
-                        if (chargeLevel === 0) lastNormalFireFrame = frameCount;
+                        if (chargeLevel === 0) lastNormalFireFrame = simFrameCount;
                         // SFX: bullet fire (charge-aware)
                         try { audio.playSfx('bullet', { charge: chargeLevel }); } catch (e) {}
                         // SFX: charge release accent for L1/L2
@@ -10308,7 +10436,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     const penalty = (typeof bullet.pierceLifetimePenalty === 'number') ? bullet.pierceLifetimePenalty : 6;
                     bullet.lifetime = Math.max(0, bullet.lifetime - penalty);
                     // Prevent multiple collisions in the same frame
-                    bullet._skipCollisionsFrame = frameCount;
+                    bullet._skipCollisionsFrame = simFrameCount;
                     return false; // not removed
                 }
                 bullets.splice(bulletIndex, 1);
@@ -10317,7 +10445,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
 
             bullets.forEach((bullet, bulletIndex) => {
                 // If the bullet already pierced something this frame, skip further collisions
-                if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                if (bullet && bullet._skipCollisionsFrame === simFrameCount) return;
                 // Bullet-bonus collisions
                 if (bonusActive) {
                     let hitBonus = false;
@@ -10351,14 +10479,14 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     if (hitBonus) {
                         consumePlayerBulletOnHit(bullet, bulletIndex);
                         // After a pierce, skip additional collisions this frame
-                        if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                        if (bullet && bullet._skipCollisionsFrame === simFrameCount) return;
                     }
                 }
                 const asteroidIterable = ENABLE_SPATIAL_GRID
                     ? asteroidGrid.queryCircle(bullet.x, bullet.y, bullet.radius + maxAsteroidRadius)
                     : asteroids;
                 asteroidIterable.forEach((asteroid) => {
-                    if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                    if (bullet && bullet._skipCollisionsFrame === simFrameCount) return;
                     const dx = bullet.x - asteroid.x;
                     const dy = bullet.y - asteroid.y;
                     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -10384,7 +10512,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                 });
 
                 // Bullet-phasedAsteroid collisions (only when visible)
-                if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                if (bullet && bullet._skipCollisionsFrame === simFrameCount) return;
                 if (phasedAsteroids && phasedAsteroids.length > 0) {
                     for (let i = 0; i < phasedAsteroids.length; i++) {
                         const pa = phasedAsteroids[i];
@@ -10404,11 +10532,11 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                                 onDestroyed: () => { if (level === 13 && !bossActive) spawnPhasedAsteroidOffscreen(); }
                             }, bullet.x, bullet.y);
                             // After a pierce, skip additional phasedAsteroid collisions this frame
-                            if (bullet && bullet._skipCollisionsFrame === frameCount) break;
+                            if (bullet && bullet._skipCollisionsFrame === simFrameCount) break;
                         }
                     }
                 }
-                if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                if (bullet && bullet._skipCollisionsFrame === simFrameCount) return;
                 // Bullet-tether node collisions (only after tether is broken)
                 if (tetherPairs && tetherPairs.length > 0) {
                     for (let i = 0; i < tetherPairs.length; i++) {
@@ -10436,14 +10564,14 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         }
                     }
                 }
-                if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                if (bullet && bullet._skipCollisionsFrame === simFrameCount) return;
                 // Bullet-boss collisions
                 if (bossActive && boss) {
                     if (boss.handleBulletCollision(bullet)) {
                         consumePlayerBulletOnHit(bullet, bulletIndex);
                     }
                 }
-                if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                if (bullet && bullet._skipCollisionsFrame === simFrameCount) return;
                 // Bullet-UFO collisions (consume bullet, decrement UFO health; no points/EXP)
                 if (ufo && !ufo.dead && !ufo.despawned) {
                     const dxu = bullet.x - ufo.x;
@@ -10455,14 +10583,14 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         createExplosion(bullet.x, bullet.y, 20, '#0ff');
                     }
                 }
-                if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                if (bullet && bullet._skipCollisionsFrame === simFrameCount) return;
                 // Bullet-mine collisions (detonate mines when shot)
                 if (mines && mines.length > 0) {
                     const mineIterable = (ENABLE_SPATIAL_GRID && mineGrid)
                         ? mineGrid.queryCircle(bullet.x, bullet.y, bullet.radius + maxMineRadius)
                         : mines;
                     mineIterable.forEach((mine) => {
-                        if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                        if (bullet && bullet._skipCollisionsFrame === simFrameCount) return;
                         if (mine.exploded) return;
                         const dxm = bullet.x - mine.x;
                         const dym = bullet.y - mine.y;
@@ -10474,7 +10602,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     });
                 }
                 // Bullet-playerMine collisions (detonate when shot by player)
-                if (playerMines && playerMines.length > 0 && bullet && bullet._skipCollisionsFrame !== frameCount) {
+                if (playerMines && playerMines.length > 0 && bullet && bullet._skipCollisionsFrame !== simFrameCount) {
                     for (let i = 0; i < playerMines.length; i++) {
                         const pm = playerMines[i];
                         if (!pm || pm.exploded) continue;
@@ -10487,7 +10615,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         }
                     }
                 }
-                if (bullet && bullet._skipCollisionsFrame === frameCount) return;
+                if (bullet && bullet._skipCollisionsFrame === simFrameCount) return;
                 // Bullet-drone collisions
                 if (drones && drones.length > 0) {
                     if (ENABLE_SPATIAL_GRID && droneGrid) {
@@ -11299,6 +11427,9 @@ function fireCloneDronesCharged(angles, chargeLevel) {
             score = 0;
             lives = 3;
             frameCount = 0;
+            // Reset armored spawn guard
+            lastArmoredScoreSpawned = -1;
+            armoredSpawnCooldown = 0;
             level = 1;
             // Ensure any previous Bonus Level state is fully cleared for this new run
             resetBonusState();
@@ -12161,13 +12292,1072 @@ function fireCloneDronesCharged(angles, chargeLevel) {
             }
         }
         
+        // Simulation tick function (placeholder). In subsequent steps, move all gameplay update logic here.
+        function tickUpdateOnce() {
+            // TODO Step 2: migrate timers, physics, AI, collisions, spawns, and level state updates
+            // Cinematic timers should decay on sim ticks
+            if (slowMoFrames > 0) slowMoFrames--;
+            if (starBoostFrames > 0) starBoostFrames--;
+            // Gameplay timers decaying on sim ticks
+            if (bossDefeatFreeze > 0) bossDefeatFreeze--;
+            if (bonusIntroFrames > 0) bonusIntroFrames--;
+            if (bonusTimer > 0) bonusTimer--;
+            if (bonusResultTimer > 0) bonusResultTimer--;
+            if (finalVictoryTimer > 0) finalVictoryTimer--;
+            if (pendingGameOver && pendingGameOverTimer > 0) pendingGameOverTimer--;
+            if (levelMessageTimer && levelMessageTimer > 0) levelMessageTimer--;
+            if (powerupMessageTimer && powerupMessageTimer > 0) powerupMessageTimer--;
+
+            // Gauntlet mode scheduling should occur on sim ticks
+            if (gameMode === 'gauntlet' && gauntlet) {
+                try { gauntlet.update(); } catch (e) {}
+            }
+
+            // Level 4 boss intro state machine (runs during classic play)
+            if (gameState === 'playing' && gameSubstate === 'boss_intro') {
+                if (bossIntroPhase === 'warning') {
+                    // Continuous screen shake during boss intro warning phase
+                    shakeFrames = Math.max(shakeFrames, 2);
+                    shakeIntensity = Math.max(shakeIntensity, 2.2);
+                    // Heartbeat beeps: one at start (fired on start), one mid-way
+                    const total = 72;
+                    const elapsed = total - Math.max(0, bossIntroTimer);
+                    if (elapsed >= 36 && bossIntroBeepLatch === 0) {
+                        bossIntroBeepLatch = 1;
+                        try { audio.playSfx('bomb'); } catch (e) {}
+                    }
+                    if (bossIntroTimer > 0) bossIntroTimer--; else {
+                        bossIntroPhase = 'flyin';
+                        bossIntroTimer = 240; // ~4s of fly-in
+                        // Level 8: initialize bottom-right offscreen start and center target; no alpha/scale fades
+                        if (level === 8) {
+                            const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+                            const w = bossIntroSprite ? (bossIntroSprite.width / dpr) : 512;
+                            const h = bossIntroSprite ? (bossIntroSprite.height / dpr) : 512;
+                            bossIntroFromX = canvas.width + w * 0.2;
+                            bossIntroFromY = canvas.height + h * 0.2;
+                            bossIntroToX = canvas.width * 0.5;
+                            bossIntroToY = canvas.height * 0.5;
+                            bossIntroX = bossIntroFromX;
+                            bossIntroY = bossIntroFromY;
+                            bossIntroScale = 1.0;
+                            bossIntroAlpha = 1.0;
+                        } else if (level === 12) {
+                            // Level 12: right-side offscreen to the Mothership's start position (no zoom/fade)
+                            const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+                            const w = bossIntroSprite ? (bossIntroSprite.width / dpr) : 512;
+                            bossIntroFromX = canvas.width + w * 0.2;
+                            bossIntroFromY = canvas.height * 0.5;
+                            bossIntroToX = canvas.width - 140; // see AlienMothershipBoss ctor
+                            bossIntroToY = canvas.height * 0.5;
+                            bossIntroX = bossIntroFromX;
+                            bossIntroY = bossIntroFromY;
+                            bossIntroScale = 1.0;
+                            bossIntroAlpha = 1.0;
+                        }
+                    }
+                } else if (bossIntroPhase === 'flyin') {
+                    // Continuous screen shake during boss intro fly-in phase (slightly stronger)
+                    shakeFrames = Math.max(shakeFrames, 2);
+                    shakeIntensity = Math.max(shakeIntensity, 3.0);
+                    // Level 8: ease-in movement from bottom-right toward center; keep scale/alpha fixed
+                    if (level === 8) {
+                        const totalFly = 240;
+                        const t = Math.max(0, Math.min(1, 1 - bossIntroTimer / totalFly));
+                        const easeIn = t * t; // quadratic ease-in for earlier on-screen appearance
+                        bossIntroX = bossIntroFromX + (bossIntroToX - bossIntroFromX) * easeIn;
+                        bossIntroY = bossIntroFromY + (bossIntroToY - bossIntroFromY) * easeIn;
+                        bossIntroScale = 1.0;
+                        bossIntroAlpha = 1.0;
+                    } else if (level === 12) {
+                        // Level 12: ease-in from offscreen right to start X on right side; no zoom/fade
+                        const totalFly = 240;
+                        const t = Math.max(0, Math.min(1, 1 - bossIntroTimer / totalFly));
+                        const easeIn = t * t;
+                        bossIntroX = bossIntroFromX + (bossIntroToX - bossIntroFromX) * easeIn;
+                        bossIntroY = bossIntroFromY + (bossIntroToY - bossIntroFromY) * easeIn;
+                        bossIntroScale = 1.0;
+                        bossIntroAlpha = 1.0;
+                    }
+                    if (bossIntroTimer > 0) bossIntroTimer--; else {
+                        // White flash and spawn boss, then clear intro state
+                        bossIntroFlash = Math.max(bossIntroFlash, 10);
+                        gameSubstate = null;
+                        if (level === 8 && !level8Spawned) {
+                            spawnLevel8Boss();
+                        } else if (level === 12 && !level12Spawned) {
+                            spawnLevel12Boss();
+                        } else if (level === 4 && !level4Spawned) {
+                            spawnLevel4Boss();
+                        } else if (level === 10 && !level10Spawned) {
+                            spawnLevel10Boss();
+                        } else if (level === 15 && !level15Spawned) {
+                            spawnLevel15Boss();
+                        }
+                        bossIntroSprite = null;
+                        bossIntroX = bossIntroY = 0;
+                    }
+                    // Animate scale/alpha toward 1 with ease-out
+                    const total = 240;
+                    const t = Math.max(0, Math.min(1, 1 - bossIntroTimer / total));
+                    const ease = 1 - Math.pow(1 - t, 3);
+                    // For non-Level 8/12 intros, use zoom/alpha tween; 8 and 12 keep fixed values
+                    if (level !== 8 && level !== 12) {
+                        bossIntroScale = 0.3 + ease * (1.0 - 0.3);
+                        bossIntroAlpha = 0.2 + ease * (1.0 - 0.2);
+                    }
+                }
+            }
+            // Classic mode: start upgrade selection at score thresholds (no boss bonus), on sim ticks
+            if (gameState === 'playing' && gameMode !== 'gauntlet') {
+                // Levels every 1000 points: 0-999:1, 1000-1999:2, ..., 9000-9999:10, 10000+:11
+                const targetLevel =
+                    (score < 1000) ? 1 :
+                    (score < 2000) ? 2 :
+                    (score < 3000) ? 3 :
+                    (score < 4000) ? 4 :
+                    (score < 5000) ? 5 :
+                    (score < 6000) ? 6 :
+                    (score < 7000) ? 7 :
+                    (score < 8000) ? 8 :
+                    (score < 9000) ? 9 :
+                    (score < 10000) ? 10 :
+                    (score < 11000) ? 11 :
+                    (score < 12000) ? 12 :
+                    (score < 13000) ? 13 :
+                    (score < 14000) ? 14 : 15;
+                // Start upgrade selection only on natural 1000-pt thresholds; suppress during bonus/upgrade flows
+                if (!bossActive && bossDefeatFreeze === 0 && !bonusActive && !bonusDecisionPending && bonusResultTimer === 0 && !upgradePending && !deferUpgradeUntilStrandedGone) {
+                    if (pendingLevel === 0 && targetLevel > level) {
+                        const nextLevel = targetLevel;
+                        const needsStrandedEvacGating = (nextLevel === 3 || nextLevel === 7) && strandedShip && strandedShip.active;
+                        if (needsStrandedEvacGating) {
+                            pendingLevel = nextLevel; // applied by level-change logic later
+                            deferUpgradeUntilStrandedGone = true;
+                        } else {
+                            startUpgradeSelection(nextLevel);
+                        }
+                    }
+                }
+            }
+            // Classic mode: apply level change and general side-effects on sim ticks
+            if (gameState === 'playing' && gameMode !== 'gauntlet') {
+                const targetLevel =
+                    (score < 1000) ? 1 :
+                    (score < 2000) ? 2 :
+                    (score < 3000) ? 3 :
+                    (score < 4000) ? 4 :
+                    (score < 5000) ? 5 :
+                    (score < 6000) ? 6 :
+                    (score < 7000) ? 7 :
+                    (score < 8000) ? 8 :
+                    (score < 9000) ? 9 :
+                    (score < 10000) ? 10 :
+                    (score < 11000) ? 11 :
+                    (score < 12000) ? 12 :
+                    (score < 13000) ? 13 :
+                    (score < 14000) ? 14 : 15;
+                // Hold during boss/upgrade/bonus/freeze; otherwise apply pending or target
+                const newLevel = (bossActive || upgradePending || bossDefeatFreeze > 0 || bonusActive || bonusDecisionPending || bonusResultTimer > 0)
+                    ? level
+                    : (pendingLevel > 0 ? pendingLevel : targetLevel);
+                if (newLevel !== level) {
+                    const prevLevel = level;
+                    level = newLevel;
+                    // Award EXP on level completion/transition
+                    addEXP(15, 'level');
+                    // Armor on boss clears only: +1 on 4,10,12
+                    try {
+                        if (prevLevel === 4 || prevLevel === 10 || prevLevel === 12) {
+                            const before = player.armor || 0;
+                            const cap = (player && player.maxArmor) ? player.maxArmor : 6;
+                            if (before < cap) { player.armor = Math.min(cap, before + 1); }
+                        }
+                    } catch (e) {}
+                    // Clear pending and set glow
+                    pendingLevel = 0;
+                    levelGlowTimer = 120;
+                    // Update background/starfield and ambient
+                    initBackgroundForLevel(level);
+                    initStars();
+                    try { startAmbientForLevel(level); } catch (e) {}
+                }
+                // Per-level transitions (migrated gradually)
+                if (level === 2 && !level2Spawned) {
+                    // Spawn stranded ship at safe random location
+                    let sx, sy, tries = 0;
+                    do {
+                        sx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                        sy = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                        tries++;
+                    } while (!isSafeForStranded(sx, sy) && tries < 50);
+                    strandedShip = new StrandedShip(sx, sy, {
+                        setShake: (frames, intensity) => {
+                            shakeFrames = Math.max(shakeFrames, frames);
+                            shakeIntensity = Math.max(shakeIntensity, intensity);
+                        }
+                    });
+                    strandedBonusGiven = false;
+                    level2Spawned = true;
+                    levelMessageTimer = 240; // ~4 seconds at 60fps
+                    levelMessageText = 'Protect the stranded ship!';
+                } else if (level === 3 && !level3Spawned) {
+                    // Evacuate stranded ship with shield; make invulnerable while exiting
+                    if (strandedShip) {
+                        strandedShip.evacuating = true;
+                        strandedShip.invulnerable = true;
+                        strandedShip.speed = 6;
+                    }
+                    levelMessageTimer = 240; // ~4 seconds at 60fps
+                    levelMessageText = 'Watch out for armored asteroids!';
+                    // Spawn armored asteroids immediately at level start (double for level 3)
+                    for (let i = 0; i < 2; i++) {
+                        let ax, ay;
+                        do {
+                            ax = Math.random() * canvas.width;
+                            ay = Math.random() * canvas.height;
+                        } while (!isSafeLocation(ax, ay));
+                        asteroids.push(new Asteroid(ax, ay, 4, true));
+                    }
+                    level3Spawned = true;
+                } else if (level === 4 && !level4Spawned && !bossActive && gameSubstate !== 'boss_intro') {
+                    // Begin Level 4 pre-fight intro sequence (warning + fly-in)
+                    startLevel4BossIntro();
+                    level4IntroStarted = true;
+                    // Clear field now so the arena is clean during intro
+                    asteroids.length = 0;
+                    bullets.length = 0;
+                    if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                } else if (level === 5 && !level5Spawned) {
+                    // Ensure stranded ship does not appear in Level 5
+                    strandedShip = null;
+                    // Spawn gravity wells around the field
+                    gravityWells = [];
+                    for (let i = 0; i < GRAVITY_WELL_COUNT; i++) {
+                        let gx, gy, tries = 0;
+                        // Enforce minimum separation between wells to avoid clustering
+                        const minSpacing = GRAVITY_RADIUS * 1.8;
+                        let ok = false;
+                        do {
+                            gx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                            gy = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                            tries++;
+                            // Must be safe and far from already placed wells
+                            if (isSafeLocation(gx, gy)) {
+                                ok = true;
+                                for (let j = 0; j < gravityWells.length; j++) {
+                                    const dx = gravityWells[j].x - gx;
+                                    const dy = gravityWells[j].y - gy;
+                                    if (Math.hypot(dx, dy) < minSpacing) { ok = false; break; }
+                                }
+                            }
+                        } while (!ok && tries < 120);
+                        gravityWells.push(new GravityWell(gx, gy));
+                    }
+                    level5Spawned = true;
+                    levelMessageTimer = 240; // ~4 seconds at 60fps
+                    levelMessageText = 'Gravity wells distort space!';
+                } else if (level === 6 && !level6Spawned) {
+                    // Transition to Level 6: remove all gravity wells from Level 5
+                    if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                    // Clear all previous level's asteroids
+                    if (asteroids && asteroids.length) asteroids.length = 0;
+                    // Spawn mines and a stranded ship
+                    mines = [];
+                    for (let i = 0; i < MINE_COUNT; i++) {
+                        let mx, my, tries = 0;
+                        do {
+                            mx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                            my = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                            tries++;
+                        } while (((Math.hypot(mx - player.x, my - player.y) < 220) || !isSafeLocation(mx, my)) && tries < 50);
+                        mines.push(new Mine(mx, my));
+                    }
+                    // Spawn stranded ship similar to level 2
+                    {
+                        let sx, sy, tries = 0;
+                        do {
+                            sx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                            sy = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                            tries++;
+                        } while (!isSafeForStranded(sx, sy) && tries < 50);
+                        strandedShip = new StrandedShip(sx, sy, {
+                            setShake: (frames, intensity) => {
+                                shakeFrames = Math.max(shakeFrames, frames);
+                                shakeIntensity = Math.max(shakeIntensity, intensity);
+                            }
+                        });
+                        strandedBonusGiven = false;
+                    }
+                    level6Spawned = true;
+                    levelMessageTimer = 240; // ~4 seconds at 60fps
+                    levelMessageText = 'Minefield detected! Protect the stranded ship!';
+                } else if (level === 7 && !level7Spawned) {
+                    // Evacuate stranded ship at end of Level 6 (invulnerable while exiting)
+                    if (strandedShip) {
+                        strandedShip.evacuating = true;
+                        strandedShip.invulnerable = true;
+                        strandedShip.speed = 6;
+                    }
+                    // Spawn two wormholes far apart
+                    wormholes = [];
+                    let ax, ay, bx, by, tries = 0;
+                    // First wormhole
+                    do {
+                        ax = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                        ay = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                        tries++;
+                    } while (!isSafeLocation(ax, ay) && tries < 100);
+                    // Second wormhole far from first and safe
+                    tries = 0;
+                    do {
+                        bx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                        by = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                        tries++;
+                    } while (((Math.hypot(bx - ax, by - ay) < Math.min(canvas.width, canvas.height) * 0.5) || !isSafeLocation(bx, by)) && tries < 200);
+                    wormholes.push(new Wormhole(ax, ay));
+                    wormholes.push(new Wormhole(bx, by));
+                    // Immediately seed asteroids for Level 7 with a 50% chance to be elite
+                    {
+                        const initialSpawns = 4;
+                        for (let i = 0; i < initialSpawns; i++) {
+                            if (Math.random() < 0.5) {
+                                spawnAsteroidOffscreen(3, false, true);
+                            } else {
+                                spawnOffscreenNormalAsteroid();
+                            }
+                        }
+                    }
+                    // Ensure a small baseline of normal asteroids at Level 7 start
+                    while (countNormalAsteroids() < 2) {
+                        spawnOffscreenNormalAsteroid();
+                    }
+                    level7Spawned = true;
+                    levelMessageTimer = 240; // ~4 seconds at 60fps
+                    levelMessageText = 'Wormholes detected! Elite asteroids inbound!';
+                } else if (level === 8 && !level8Spawned && !bossActive && gameSubstate !== 'boss_intro') {
+                    // Begin Level 8 pre-fight intro sequence (warning + bottom-right fly-in)
+                    startLevel8BossIntro();
+                    level8IntroStarted = true;
+                    // Clear field so the arena is clean during intro
+                    if (wormholes && wormholes.length) wormholes.length = 0;
+                    if (mines && mines.length) mines.length = 0;
+                    asteroids.length = 0;
+                    bullets.length = 0;
+                    enemyBullets.length = 0;
+                    if (drones && drones.length) drones.length = 0;
+                    if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                } else if (level === 9 && !level9Spawned && !bossActive) {
+                    // Level 9: Dense asteroid belt of medium normal asteroids
+                    level9Spawned = true;
+                    levelMessageTimer = 240;
+                    levelMessageText = 'Danger! Asteroid belt';
+                    // Clear field for the Level 9 transition (remove previous level's entities/hazards)
+                    asteroids.length = 0;
+                    bullets.length = 0;
+                    enemyBullets.length = 0;
+                    if (drones && drones.length) drones.length = 0;
+                    if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                    if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                    if (wormholes && wormholes.length) wormholes.length = 0;
+                    if (mines && mines.length) mines.length = 0;
+                    strandedShip = null;
+                    // Level 9: spawn a single gravity well within the central 50% of the screen
+                    {
+                        const minX = canvas.width * 0.25;
+                        const maxX = canvas.width * 0.75;
+                        const minY = canvas.height * 0.25;
+                        const maxY = canvas.height * 0.75;
+                        let gx, gy, tries = 0;
+                        do {
+                            gx = minX + Math.random() * (maxX - minX);
+                            gy = minY + Math.random() * (maxY - minY);
+                            tries++;
+                        } while (!isSafeLocation(gx, gy) && tries < 60);
+                        gravityWells.push(new GravityWell(gx, gy));
+                    }
+                    // Spawn 2x the usual cap (16) medium normal asteroids
+                    for (let i = 0; i < 16; i++) {
+                        let ax, ay, tries = 0;
+                        do {
+                            ax = Math.random() * canvas.width;
+                            ay = Math.random() * canvas.height;
+                            tries++;
+                        } while (!isSafeLocation(ax, ay) && tries < 100);
+                        // Level 9: 35% chance each spawn is an armored asteroid
+                        if (Math.random() < 0.35) {
+                            asteroids.push(new Asteroid(ax, ay, 4, true));
+                        } else {
+                            asteroids.push(new Asteroid(ax, ay, 2));
+                        }
+                    }
+                } else if (level === 10 && !level10Spawned && !bossActive && gameSubstate !== 'boss_intro') {
+                    // Begin Level 10 pre-fight intro sequence (warning + fly-in)
+                    startLevel10BossIntro();
+                    level10IntroStarted = true;
+                    // Clear field so the arena is clean during intro
+                    asteroids.length = 0;
+                    bullets.length = 0;
+                    enemyBullets.length = 0;
+                    if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                    if (wormholes && wormholes.length) wormholes.length = 0;
+                    if (mines && mines.length) mines.length = 0;
+                    if (drones && drones.length) drones.length = 0;
+                    if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                } else if (level === 11 && !level11Spawned && !bossActive) {
+                    // Level 11: Stranded ship + two wormhole pairs, continuous normal asteroid flow
+                    // Clear field of hazards/enemies and reset stranded ship
+                    if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                    if (mines && mines.length) mines.length = 0;
+                    enemyBullets.length = 0;
+                    if (drones && drones.length) drones.length = 0;
+                    if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                    // Keep existing asteroids; we'll add flow below
+                    // Spawn stranded ship safely inside the playfield
+                    {
+                        let sx, sy, tries = 0;
+                        do {
+                            sx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                            sy = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                            tries++;
+                        } while (!isSafeForStranded(sx, sy) && tries < 50);
+                        strandedShip = new StrandedShip(sx, sy, {
+                            setShake: (frames, intensity) => {
+                                shakeFrames = Math.max(shakeFrames, frames);
+                                shakeIntensity = Math.max(shakeIntensity, intensity);
+                            }
+                        });
+                    }
+                    // Spawn two wormhole pairs far apart and safe
+                    wormholes = [];
+                    const spawnWormholePair = () => {
+                        let ax, ay, bx, by, tries = 0;
+                        // First of pair
+                        do {
+                            ax = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                            ay = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                            tries++;
+                        } while (!isSafeLocation(ax, ay) && tries < 100);
+                        // Second of pair far from first and safe
+                        tries = 0;
+                        do {
+                            bx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+                            by = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
+                            tries++;
+                        } while (((Math.hypot(bx - ax, by - ay) < Math.min(canvas.width, canvas.height) * 0.5) || !isSafeLocation(bx, by)) && tries < 200);
+                        wormholes.push(new Wormhole(ax, ay));
+                        wormholes.push(new Wormhole(bx, by));
+                    };
+                    spawnWormholePair();
+                    spawnWormholePair();
+                    // Ensure a baseline of normal asteroids at Level 11 start
+                    while (countNormalAsteroids() < 4) {
+                        spawnOffscreenNormalAsteroid();
+                    }
+                    level11Spawned = true;
+                    levelMessageTimer = 240;
+                    levelMessageText = 'Protect the stranded ship! Wormholes detected!';
+                } else if (level === 12 && !level12Spawned && !bossActive && gameSubstate !== 'boss_intro') {
+                    // Begin Level 12 pre-fight intro sequence (warning + right-side fly-in)
+                    startLevel12BossIntro();
+                    level12IntroStarted = true;
+                    // Clear field so the arena is clean during intro
+                    if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                    if (wormholes && wormholes.length) wormholes.length = 0;
+                    if (mines && mines.length) mines.length = 0;
+                    if (blackHole) blackHole = null;
+                    asteroids.length = 0;
+                    bullets.length = 0;
+                    enemyBullets.length = 0;
+                    if (drones && drones.length) drones.length = 0;
+                    if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                    strandedShip = null;
+                } else if (level === 13 && !level13Spawned && !bossActive) {
+                    // Level 13: Replace wormholes with a single Black Hole + phased/armored asteroids
+                    // Clear prior hazards and transient entities
+                    if (asteroids && asteroids.length) asteroids.length = 0;
+                    if (phasedAsteroids && phasedAsteroids.length) phasedAsteroids.length = 0;
+                    // Switch to boss music
+                    try { startBossMusicForLevel(level); } catch (e) {}
+                    if (bullets && bullets.length) bullets.length = 0;
+                    if (wormholes && wormholes.length) wormholes.length = 0;
+                    if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                    if (mines && mines.length) mines.length = 0;
+                    enemyBullets.length = 0;
+                    if (drones && drones.length) drones.length = 0;
+                    if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                    strandedShip = null;
+                    // Ensure wormholes are not used on Level 13
+                    wormholes = [];
+                    // Spawn a single Black Hole safely away from player and edges
+                    blackHole = new BlackHole(canvas, player);
+
+                    // Seed initial phased asteroids off-screen for flow
+                    for (let i = 0; i < 4; i++) {
+                        spawnPhasedAsteroidOffscreen();
+                    }
+                    // Seed several armored asteroids safely in-field
+                    for (let i = 0; i < 3; i++) {
+                        let sax, say, sTries = 0;
+                        do {
+                            sax = Math.random() * canvas.width;
+                            say = Math.random() * canvas.height;
+                            sTries++;
+                        } while (!isSafeLocation(sax, say) && sTries < 80);
+                        asteroids.push(new Asteroid(sax, say, 4, true));
+                    }
+
+                    // Ensure any leftover tether pairs are cleared when entering Level 13
+                    if (tetherPairs && tetherPairs.length) tetherPairs.length = 0;
+
+                    level13Spawned = true;
+                    levelMessageTimer = 240; // ~4 seconds
+                    levelMessageText = 'Beware the Black Hole!';
+                } else if (level === 14 && !level14Spawned && !bossActive) {
+                    // Level 14: Normal asteroid field reset and buildup
+                    // Clear hazards and transient entities
+                    if (gravityWells && gravityWells.length) gravityWells.length = 0;
+                    if (wormholes && wormholes.length) wormholes.length = 0;
+                    if (mines && mines.length) mines.length = 0;
+                    if (blackHole) blackHole = null;
+                    enemyBullets.length = 0;
+                    if (drones && drones.length) drones.length = 0;
+                    if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                    strandedShip = null;
+                    if (tetherPairs && tetherPairs.length) tetherPairs.length = 0;
+
+                    // Seed baseline of normal asteroids safely in-field
+                    // Note: spawnOffscreenNormalAsteroid() enforces NORMAL_ASTEROID_CAP (5),
+                    // so requesting 6 here can deadlock. Respect the cap and bypass it for initial seeding.
+                    {
+                        const targetNormals = Math.min(6, NORMAL_ASTEROID_CAP);
+                        let safety = 0; // guard against unforeseen conditions
+                        while (countNormalAsteroids() < targetNormals && safety < 20) {
+                            // Bypass cap enforcement for initial seeding to avoid infinite loop
+                            spawnAsteroidOffscreen(3, false, false);
+                            safety++;
+                        }
+                    }
+
+                    // Spawn tether-pair hazards
+                    while (tetherPairs.length < TETHER_PAIR_COUNT) {
+                        tetherPairs.push(new TetherPair(canvas));
+                    }
+
+                    level14Spawned = true;
+                    levelMessageTimer = 240;
+                    levelMessageText = 'Warning: Tethered asteroids are invulnrable!';
+                } else if (level === 15 && !level15Spawned && !bossActive && gameSubstate !== 'boss_intro') {
+                    // Begin Level 15 pre-fight intro sequence (warning + fly-in)
+                    startLevel15BossIntro();
+                    level15IntroStarted = true;
+                    // Clear the field now so the arena is clean during intro
+                    if (tetherPairs && tetherPairs.length) tetherPairs.length = 0;
+                    if (blackHole) blackHole = null;
+                    asteroids.length = 0;
+                    bullets.length = 0;
+                    enemyBullets.length = 0;
+                    if (drones && drones.length) drones.length = 0;
+                    if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                    strandedShip = null;
+                }
+            }
+            // Entity updates (migrating in parts): run on sim ticks only
+            if (gameState === 'playing') {
+                // Option B (start): snapshot previous state for interpolation
+                try {
+                    if (player) { player.prevX = player.x; player.prevY = player.y; player.prevAngle = player.angle || 0; }
+                    if (asteroids && asteroids.length) { asteroids.forEach(a => { a.prevX = a.x; a.prevY = a.y; a.prevRotation = (typeof a.rotation === 'number') ? a.rotation : 0; a.justTeleported = false; }); }
+                    if (phasedAsteroids && phasedAsteroids.length) { phasedAsteroids.forEach(pa => { pa.prevX = pa.x; pa.prevY = pa.y; pa.prevRotation = (typeof pa.rotation === 'number') ? pa.rotation : 0; pa.justTeleported = false; }); }
+                    if (bullets && bullets.length) { bullets.forEach(b => { b.prevX = b.x; b.prevY = b.y; b.justTeleported = false; }); }
+                    if (enemyBullets && enemyBullets.length) { enemyBullets.forEach(b => { b.prevX = b.x; b.prevY = b.y; b.justTeleported = false; }); }
+                    if (drones && drones.length) { drones.forEach(d => { d.prevX = d.x; d.prevY = d.y; d.prevAngle = Math.atan2(d.vy || 0, d.vx || 0); }); }
+                    if (cloneDrones && cloneDrones.length) { cloneDrones.forEach(t => { t.prevX = t.x; t.prevY = t.y; t.prevAngle = (typeof t.angle === 'number') ? t.angle : Math.atan2(t.vy || 0, t.vx || 0); }); }
+                    if (bossActive && boss) { boss.prevX = boss.x; boss.prevY = boss.y; }
+                } catch (e) {}
+                // Cooldowns that tick once per sim frame
+                if (armoredSpawnCooldown > 0) armoredSpawnCooldown--;
+                // Asteroids: physics and behavior
+                if (asteroids && asteroids.length > 0) {
+                    asteroids.forEach(a => {
+                        a.update(level, gravityWells, canvas, applyGravityTo, (sx, sy) => {
+                            // Spawn a homing drone at the asteroid's position
+                            drones.push(new Drone(sx, sy));
+                        });
+                    });
+                }
+                // Phased asteroids: update and cull
+                if (phasedAsteroids && phasedAsteroids.length > 0) {
+                    filterInPlace(phasedAsteroids, pa => {
+                        pa.update(canvas);
+                        return !pa.dead;
+                    });
+                }
+                // Mines (Level 6): update and cull; player-deployed mines as well
+                if (mines && mines.length > 0) {
+                    mines = mines.filter(m => !m.exploded);
+                    mines.forEach(m => { m.update(level, gravityWells, canvas, applyGravityTo); });
+                }
+                if (playerMines && playerMines.length > 0) {
+                    playerMines = playerMines.filter(pm => !pm.exploded);
+                    for (let i = 0; i < playerMines.length; i++) {
+                        const pm = playerMines[i];
+                        pm.update();
+                    }
+                }
+                // Player bullets: update, cull by lifetime, absorb by Black Hole
+                bullets = bullets.filter(bullet => {
+                    bullet.update(canvas, level, applyGravityTo);
+                    if (bullet.lifetime <= 0) return false;
+                    if (blackHole && blackHole.absorbsBullet(bullet.x, bullet.y, bullet.radius)) return false;
+                    return true;
+                });
+                // Enemy bullets (boss/turrets): update and cull by lifetime
+                if (enemyBullets && enemyBullets.length > 0) {
+                    filterInPlace(enemyBullets, b => {
+                        b.update(canvas);
+                        return b.lifetime > 0;
+                    });
+                }
+
+                // Drones (homing/attack/crystal): update and cull during sim tick
+                if (drones && drones.length > 0) {
+                    filterInPlace(drones, d => {
+                        try { d.update(player, canvas, enemyBullets, EnemyBullet); } catch (e) { try { d.update(player, canvas); } catch (e2) {} }
+                        return !d.dead;
+                    });
+                }
+
+                // Friendly clone turrets: update and cull (life, fire cadence)
+                if (cloneDrones && cloneDrones.length > 0) {
+                    filterInPlace(cloneDrones, t => {
+                        if (t.dead) return false;
+                        // life timer
+                        if (typeof t.life === 'number') {
+                            t.life -= 1;
+                            if (t.life <= 0) {
+                                t.dead = true;
+                                try { createExplosion(t.x, t.y, 36, '#6ff'); } catch (e) {}
+                                return false;
+                            }
+                        }
+                        // fire cadence
+                        if (typeof t.fireCooldown === 'number') t.fireCooldown -= 1; else t.fireCooldown = 30;
+                        if (t.fireCooldown <= 0) {
+                            const ang = (typeof t.angle === 'number') ? t.angle : 0;
+                            const bx = t.x + Math.cos(ang) * 12;
+                            const by = t.y + Math.sin(ang) * 12;
+                            const b = new Bullet(bx, by, ang, 0);
+                            try {
+                                const style = getBulletStyleForSkin(window.activeSkinId, 0);
+                                if (style && style.color) b.color = style.color;
+                                if (style && style.variant) b.variant = style.variant;
+                            } catch (e) {}
+                            bullets.push(b);
+                            t.fireCooldown = 30;
+                            if (typeof t.muzzleFlash === 'number') t.muzzleFlash = 3; else t.muzzleFlash = 3;
+                        }
+                        if (typeof t.muzzleFlash === 'number' && t.muzzleFlash > 0) t.muzzleFlash--;
+                        return true;
+                    });
+                }
+
+                // Update player (movement, timers, input)
+                updatePlayer();
+                // Black Hole contact damage
+                if (blackHole && player.invulnerable <= 0) {
+                    if (blackHole.touchesPlayer(player.x, player.y, player.radius)) {
+                        takePlayerHit();
+                    }
+                }
+
+                // Wormhole teleports for player, asteroids, bullets, phased asteroids
+                if (wormholes && wormholes.length >= 2) {
+                    const pairs = [];
+                    for (let i = 0; i + 1 < wormholes.length; i += 2) {
+                        pairs.push([wormholes[i], wormholes[i + 1]]);
+                    }
+                    const tryWarp = (obj, rad) => {
+                        for (let k = 0; k < pairs.length; k++) {
+                            const A = pairs[k][0], B = pairs[k][1];
+                            const test = (from, to) => {
+                                const dx = obj.x - from.x, dy = obj.y - from.y;
+                                if (Math.hypot(dx, dy) < from.radius + rad) {
+                                    // direction from velocity or random
+                                    let vx = obj.vx || 0, vy = obj.vy || 0;
+                                    if (vx === 0 && vy === 0) {
+                                        const ang = Math.random() * Math.PI * 2;
+                                        vx = Math.cos(ang); vy = Math.sin(ang);
+                                    }
+                                    const sp = Math.hypot(vx, vy) || 1;
+                                    const nx = vx / sp, ny = vy / sp;
+                                    obj.x = to.x + nx * (to.radius + rad + 2);
+                                    obj.y = to.y + ny * (to.radius + rad + 2);
+                                    // mark as teleported so render skips interpolation this frame
+                                    obj.justTeleported = true;
+                                    // arrival shimmer
+                                    for (let i = 0; i < 16; i++) {
+                                        const ang = (Math.PI * 2 * i) / 16;
+                                        particles.push(new Particle(
+                                            obj.x,
+                                            obj.y,
+                                            Math.cos(ang) * 2,
+                                            Math.sin(ang) * 2,
+                                            '#8ff',
+                                            24
+                                        ));
+                                    }
+                                    return true;
+                                }
+                                return false;
+                            };
+                            if (test(A, B) || test(B, A)) return true;
+                        }
+                        return false;
+                    };
+                    // Player warp using existing teleporting cooldown
+                    if (player.teleporting <= 0) {
+                        if (tryWarp(player, player.radius)) {
+                            player.teleporting = WORMHOLE_COOLDOWN;
+                        }
+                    }
+                    // Asteroids warp with own cooldown
+                    asteroids.forEach(ast => {
+                        if (ast.warpCooldown && ast.warpCooldown > 0) ast.warpCooldown--;
+                        if (!ast.warpCooldown || ast.warpCooldown <= 0) {
+                            if (tryWarp(ast, ast.radius)) {
+                                ast.warpCooldown = WORMHOLE_COOLDOWN;
+                            }
+                        }
+                    });
+                    // Phased asteroids warp with own cooldown
+                    phasedAsteroids.forEach(pa => {
+                        if (pa.warpCooldown && pa.warpCooldown > 0) pa.warpCooldown--;
+                        if (!pa.warpCooldown || pa.warpCooldown <= 0) {
+                            if (tryWarp(pa, pa.radius)) {
+                                pa.warpCooldown = WORMHOLE_COOLDOWN;
+                            }
+                        }
+                    });
+                    // Bullets warp with own cooldown
+                    bullets.forEach(b => {
+                        if (b.warpCooldown && b.warpCooldown > 0) b.warpCooldown--;
+                        if (!b.warpCooldown || b.warpCooldown <= 0) {
+                            if (tryWarp(b, b.radius)) {
+                                b.warpCooldown = WORMHOLE_COOLDOWN;
+                            }
+                        }
+                    });
+                }
+
+                // Update powerups (drift and offscreen despawn)
+                if (powerups && powerups.length > 0) {
+                    filterInPlace(powerups, p => {
+                        p.update(canvas);
+                        return !p.dead;
+                    });
+                }
+
+                // Collisions
+                checkCollisions();
+
+                // Classic periodic and refill spawns (sim tick cadence)
+                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro') {
+                    // Trickle flow by level
+                    if (level === 7 && (simFrameCount % 240) === 0) {
+                        if (countNormalAsteroids() < 2) {
+                            spawnOffscreenNormalAsteroid();
+                        }
+                    }
+                    if (level === 11 && (simFrameCount % 180) === 0) {
+                        if (countNormalAsteroids() < 4) {
+                            spawnOffscreenNormalAsteroid();
+                        }
+                    }
+                    if (level === 14 && (simFrameCount % 150) === 0) {
+                        if (countNormalAsteroids() < 6) {
+                            spawnOffscreenNormalAsteroid();
+                        }
+                    }
+                    // Refill when field is empty of asteroids
+                    if ((asteroids.length + phasedAsteroids.length) === 0) {
+                        const numAsteroids = Math.min(4 + Math.floor(score / 1000), 8);
+                        for (let i = 0; i < numAsteroids; i++) {
+                            if (level === 6) {
+                                spawnOffscreenNormalAsteroid();
+                            } else if (level === 7) {
+                                // Maintain small baseline of normals; otherwise 50% elite
+                                if (countNormalAsteroids() < 2) {
+                                    spawnOffscreenNormalAsteroid();
+                                } else if (Math.random() < 0.5) {
+                                    spawnAsteroidOffscreen(3, false, true);
+                                } else {
+                                    spawnOffscreenNormalAsteroid();
+                                }
+                            } else if (level === 13) {
+                                // Normals disabled; refill with phased/armored mix
+                                if (Math.random() < 0.7) {
+                                    spawnPhasedAsteroidOffscreen();
+                                } else {
+                                    spawnAsteroidOffscreen(4, true, false);
+                                }
+                            } else if (level === 4 && Math.random() < 0.45) {
+                                // Level 4: cap armored asteroids alive at 4
+                                const armoredAlive = asteroids.filter(a => a.armored).length;
+                                if (armoredAlive < 4) {
+                                    spawnAsteroidOffscreen(4, true, false);
+                                } else {
+                                    spawnOffscreenNormalAsteroid();
+                                }
+                            } else if (level === 5 && Math.random() < 0.30) {
+                                // Level 5: cap armored asteroids alive at 4
+                                const armoredAlive = asteroids.filter(a => a.armored).length;
+                                if (armoredAlive < 4) {
+                                    spawnAsteroidOffscreen(4, true, false);
+                                } else {
+                                    spawnOffscreenNormalAsteroid();
+                                }
+                            } else {
+                                spawnOffscreenNormalAsteroid();
+                            }
+                        }
+                    }
+                    // Armored asteroid every 500 points (guarded and cooldown limited)
+                    if (level !== 6 && level !== 7 && score > 0 && (score % 500) === 0 && (simFrameCount % 60) === 0 && score !== lastArmoredScoreSpawned && armoredSpawnCooldown === 0) {
+                        let x, y;
+                        do {
+                            x = Math.random() * canvas.width;
+                            y = Math.random() * canvas.height;
+                        } while (!isSafeLocation(x, y));
+                        // Level 4 and 5: cap armored asteroids alive at 4
+                        if (level === 4 || level === 5) {
+                            const armoredAlive = asteroids.filter(a => a.armored).length;
+                            if (armoredAlive < 4) {
+                                asteroids.push(new Asteroid(x, y, 4, true));
+                            }
+                        } else {
+                            asteroids.push(new Asteroid(x, y, 4, true));
+                        }
+                        // Level 3: double the armored spawn for added difficulty
+                        if (level === 3) {
+                            let x2, y2;
+                            do {
+                                x2 = Math.random() * canvas.width;
+                                y2 = Math.random() * canvas.height;
+                            } while (!isSafeLocation(x2, y2));
+                            asteroids.push(new Asteroid(x2, y2, 4, true));
+                        }
+                        // Record that we've satisfied this threshold and start cooldown (~2s)
+                        lastArmoredScoreSpawned = score;
+                        armoredSpawnCooldown = 120;
+                    }
+                }
+
+                // Finalize combo window (deterministic on sim ticks)
+                if (comboActive && lastKillFrame >= 0 && (simFrameCount - lastKillFrame) > COMBO_WINDOW_FRAMES) {
+                    maxComboBonusTotal = Math.max(maxComboBonusTotal, currentComboBonusTotal);
+                    comboActive = false;
+                    currentComboBonusTotal = 0;
+                    comboBonusPercent = 0;
+                }
+
+                // Boss update and defeat handling
+                if (bossActive && boss) {
+                    boss.update();
+                    if (typeof boss.isDefeated === 'function' && boss.isDefeated()) {
+                        // End boss phase
+                        const bx = boss.x, by = boss.y;
+                        const bossName = (boss && boss.constructor && boss.constructor.name) || '';
+                        bossActive = false;
+                        boss = null;
+                        if (level === 15) {
+                            // Final victory: display HUD message and schedule Game Over after 5s
+                            bossDefeatFreeze = 300;
+                            finalVictoryPending = true;
+                            finalVictoryTimer = 300; // 5s at 60fps
+                            // HUD banner (with completion rewards summary when available)
+                            try {
+                                const txt = (typeof getActiveCompletionRewardsText === 'function') ? getActiveCompletionRewardsText() : '';
+                                if (txt && txt.length) showHUDMessage && showHUDMessage(`FINAL BOSS DEFEATED! Rewards: ${txt}`, 240);
+                                else showHUDMessage && showHUDMessage('FINAL BOSS DEFEATED!', 240);
+                            } catch (e) { try { showHUDMessage && showHUDMessage('FINAL BOSS DEFEATED!', 240); } catch (e2) {} }
+                            // Persist completion for start screen UI
+                            try { localStorage.setItem('asteraidGameCompleted', '1'); } catch (e) {}
+                            // Prevent any last-second deaths during celebration
+                            player.invulnerable = Math.max(player.invulnerable, 300);
+                            // Ensure thrust loop is silenced
+                            try { audio.stopThrust(); } catch (e) {}
+                            // Big overlay pulse at the defeat location
+                            if (glRenderer) {
+                                if (glRenderer.pulseExplosion) glRenderer.pulseExplosion(300, bx, by);
+                                if (glRenderer.spawnGlow) glRenderer.spawnGlow(bx, by, 0xffccaa, 72, 1.0);
+                            }
+                            // Cinematic FX: short slow-mo, starfield boost, vignette flash, brief chroma split
+                            slowMoFrames = Math.max(slowMoFrames, 42);
+                            starBoostFrames = Math.max(starBoostFrames, 150);
+                            vignetteFlashFrames = Math.max(vignetteFlashFrames, 15);
+                            chromaAberrationFrames = Math.max(chromaAberrationFrames, 3);
+                            // Supernova rings and embers using Particle system (performance-light)
+                            try {
+                                // Supernova rings
+                                if (glRenderer && glRenderer.spawnShockwaveRing) {
+                                    glRenderer.spawnShockwaveRing(bx, by, 0xffeeaa, 36, 3, 1.06, 0.92);
+                                    glRenderer.spawnShockwaveRing(bx, by, 0xffeeaa, 54, 3, 1.05, 0.92);
+                                    glRenderer.spawnShockwaveRing(bx, by, 0xffeeaa, 72, 3, 1.04, 0.92);
+                                } else {
+                                    for (let i = 0; i < 3; i++) {
+                                        const ring = new Particle(bx, by, 0, 0, '#ffeeaa', 36 + i * 18);
+                                        ring.shape = 'ring';
+                                        ring.noWrap = true;
+                                        ring.growth = 12 + i * 8;
+                                        ring.thickness = 3;
+                                        ring.glow = 24;
+                                        particlesAbove.push(ring);
+                                    }
+                                }
+                                // Dissolve glitter
+                                if (glRenderer && glRenderer.spawnAboveDiamond) {
+                                    for (let i = 0; i < 40; i++) {
+                                        const a = Math.random() * Math.PI * 2;
+                                        const sp = 1 + Math.random() * 2.5;
+                                        glRenderer.spawnAboveDiamond(
+                                            bx,
+                                            by,
+                                            0xffddaa,
+                                            3,
+                                            Math.cos(a) * sp,
+                                            Math.sin(a) * sp,
+                                            60 + (Math.random() * 30 | 0),
+                                            1.0
+                                        );
+                                    }
+                                } else {
+                                    for (let i = 0; i < 40; i++) {
+                                        const a = Math.random() * Math.PI * 2;
+                                        const sp = 1 + Math.random() * 2.5;
+                                        const p = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, '#ffddaa', 60 + (Math.random() * 30 | 0));
+                                        p.shape = 'diamond'; p.noWrap = true; p.glow = 14; p.radius = 2 + Math.random() * 2;
+                                        particlesAbove.push(p);
+                                    }
+                                }
+                            } catch (e) {}
+                        } else {
+                            // Normal boss defeat: 3s freeze and advance level
+                            bossDefeatFreeze = 210;
+                            // Revert back to ambient track after non-final boss defeat
+                            try { startAmbientForLevel(level); } catch (e) {}
+                            // Queue next level transition without forcing an upgrade offer
+                            pendingLevel = Math.min(15, level + 1);
+                            // Mark that we should decide on a bonus level once freeze ends (levels 4, 8, 10, 12)
+                            if (level === 4 || level === 8 || level === 10 || level === 12) {
+                                bonusDecisionPending = true;
+                            }
+                            levelMessageTimer = 240;
+                            levelMessageText = 'Boss defeated!';
+                            // Short cinematic beats
+                            slowMoFrames = Math.max(slowMoFrames, 30);
+                            starBoostFrames = Math.max(starBoostFrames, 45);
+                            vignetteFlashFrames = Math.max(vignetteFlashFrames, 10);
+                            // Subtle portal/wipe hint
+                            try { warpTunnels.push(new WarpTunnel(bx, by, canvas.width * 0.5, canvas.height * 0.5, 60)); } catch (e) {}
+                            // Particle streamers & boss-specific signature
+                            try {
+                                const streamerCount = 18;
+                                for (let i = 0; i < streamerCount; i++) {
+                                    const a = Math.random() * Math.PI * 2;
+                                    const sp = 2 + Math.random() * 3;
+                                    const col = '#aaccff';
+                                    if (glRenderer && glRenderer.spawnAboveShard) {
+                                        const len = 18 + Math.random() * 14;
+                                        glRenderer.spawnAboveShard(
+                                            bx,
+                                            by,
+                                            0xaaccff,
+                                            len,
+                                            Math.cos(a) * sp,
+                                            Math.sin(a) * sp,
+                                            45 + (Math.random() * 20 | 0),
+                                            1.0
+                                        );
+                                    } else {
+                                        const s = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, col, 45 + (Math.random() * 20 | 0));
+                                        s.shape = 'shard'; s.noWrap = true; s.glow = 16; s.length = 18 + Math.random() * 14; s.thickness = 2;
+                                        particlesAbove.push(s);
+                                    }
+                                }
+                                // Boss-specific quick flair
+                                const flair = (name) => {
+                                    if (name === 'ColossusBoss') return '#ff6666';
+                                    if (name === 'DreadshipBoss') return '#bb66ff';
+                                    if (name === 'CrystalTitanBoss') return '#aaccff';
+                                    if (name === 'AlienMothershipBoss') return '#ff8899';
+                                    return '#ffffff';
+                                };
+                                for (let i = 0; i < 14; i++) {
+                                    const a = Math.random() * Math.PI * 2;
+                                    const sp = 1.5 + Math.random() * 2.2;
+                                    const c = flair(bossName);
+                                    if (glRenderer && glRenderer.spawnAboveDiamond) {
+                                        glRenderer.spawnAboveDiamond(
+                                            bx,
+                                            by,
+                                            parseInt((c || '#ffffff').replace('#','0x')) || 0xffffff,
+                                            3,
+                                            Math.cos(a) * sp,
+                                            Math.sin(a) * sp,
+                                            50 + (Math.random() * 20 | 0),
+                                            1.0
+                                        );
+                                    } else {
+                                        const p = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, c, 50 + (Math.random() * 20 | 0));
+                                        p.shape = 'diamond'; p.noWrap = true; p.glow = 12; p.radius = 2 + Math.random() * 2;
+                                        particlesAbove.push(p);
+                                    }
+                                }
+                                // Dissolve glitter burst (diamond glitter) for non-final bosses as well
+                                {
+                                    const c = flair(bossName);
+                                    const cNum = parseInt((c || '#ffffff').replace('#','0x')) || 0xffffff;
+                                    if (glRenderer && glRenderer.spawnAboveDiamond) {
+                                        for (let i = 0; i < 36; i++) {
+                                            const a = Math.random() * Math.PI * 2;
+                                            const sp = 1.0 + Math.random() * 2.3;
+                                            glRenderer.spawnAboveDiamond(
+                                                bx,
+                                                by,
+                                                cNum,
+                                                3,
+                                                Math.cos(a) * sp,
+                                                Math.sin(a) * sp,
+                                                45 + (Math.random() * 20 | 0),
+                                                1.0
+                                            );
+                                        }
+                                    } else {
+                                        for (let i = 0; i < 36; i++) {
+                                            const a = Math.random() * Math.PI * 2;
+                                            const sp = 1.0 + Math.random() * 2.3;
+                                            const d = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, c, 45 + (Math.random() * 20 | 0));
+                                            d.shape = 'diamond'; d.noWrap = true; d.glow = 10; d.radius = 2 + Math.random() * 2;
+                                            particlesAbove.push(d);
+                                        }
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                }
+            }
+        }
+
         // Main game loop
         function gameLoop() {
             // Clear current RAF id to allow queuing the next one
             if (gameLoopRAF) gameLoopRAF = 0;
             // 60 FPS cap regardless of display refresh rate
             const perfNow = performance.now();
-            if (!frameThrottleNext) frameThrottleNext = perfNow + FRAME_CAP_MS;
+            // ... (rest of the code remains the same)
+            if (!frameThrottleNext) frameThrottleNext = perfNow + currentFrameCapMs;
             const wait = frameThrottleNext - perfNow; // >0 means we are ahead of schedule
             if (wait > 0.25) {
                 // Delay next RAF to align to 60Hz slot to avoid hammering RAF at high refresh
@@ -12175,8 +13365,8 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                 return;
             }
             // If we fell far behind (e.g., tab resumed), reset to avoid catch-up spiral
-            if (-wait > 250) frameThrottleNext = perfNow + FRAME_CAP_MS;
-            else frameThrottleNext += FRAME_CAP_MS;
+            if (-wait > 250) frameThrottleNext = perfNow + currentFrameCapMs;
+            else frameThrottleNext += currentFrameCapMs;
 
             // Frame pacing tracking and optional logging
             let dtMs = perfNow - lastPerfNow;
@@ -12472,6 +13662,34 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                 scheduleGameLoopNextFrame(0);
                 return;
             }
+            // Fixed-step accumulator with adaptive frameskip: run up to MAX_STEPS_PER_FRAME sim ticks
+            if (gameState === 'playing' && !paused) {
+                const ts = perfNow;
+                if (!lastTimestampMs) lastTimestampMs = ts;
+                let deltaMs = ts - lastTimestampMs;
+                if (!isFinite(deltaMs) || deltaMs < 0) deltaMs = SIM_DT_MS;
+                if (deltaMs > 100) deltaMs = 100; // clamp burst after tab restore
+                accumulatorMs += deltaMs;
+                lastTimestampMs = ts;
+                let steps = 0;
+                const maxSteps = Math.max(1, Math.min(6, window.maxStepsPerFrame || MAX_STEPS_PER_FRAME));
+                while (accumulatorMs >= SIM_DT_MS && steps < maxSteps) {
+                    accumulatorMs -= SIM_DT_MS;
+                    // Execute one simulation tick
+                    tickUpdateOnce();
+                    simFrameCount++;
+                    steps++;
+                }
+                // If still behind, skip this render to catch up
+                if (accumulatorMs >= SIM_DT_MS) {
+                    scheduleGameLoopNextFrame(0);
+                    return;
+                }
+            }
+            // Compute interpolation alpha from remaining accumulator for rendering
+            const renderAlpha = (gameState === 'playing' && !paused)
+                ? Math.max(0, Math.min(1, accumulatorMs / SIM_DT_MS))
+                : 0;
             // Clear canvas and draw starfield (also on menus), with optional warp scaling
             // Ensure we start every frame from a clean, opaque black base during launch/warp
             try {
@@ -12505,6 +13723,16 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                 // Ensure no legacy launch blur effect
                 if (glRenderer && glRenderer.setLaunchBlur) { glRenderer.setLaunchBlur(0); if (glRenderer.resetFeedbackAlpha) glRenderer.resetFeedbackAlpha(); }
             }
+            // Optional temporal smoothing hint to WebGL overlay
+            try {
+                if (glRenderer && typeof glRenderer.setFeedbackAlpha === 'function') {
+                    // Stronger feedback when render cap < 60; 0 disables smoothing
+                    const fb = (temporalSmoothing && renderCapHz && renderCapHz < 60) ? 0.20 : (temporalSmoothing ? 0.08 : 0);
+                    glRenderer.setFeedbackAlpha(fb);
+                } else if (glRenderer && typeof glRenderer.setTemporalSmoothing === 'function') {
+                    glRenderer.setTemporalSmoothing(!!(temporalSmoothing && renderCapHz && renderCapHz < 60));
+                }
+            } catch (e) {}
             // Global screen-shake transform
             ctx.save();
             if (shakeFrames > 0) {
@@ -12628,8 +13856,8 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                 // Keep UI updated (e.g., score display frozen)
                 updateUI();
             } else if (gameState === 'playing') {
-                // Decrement boss defeat freeze timer
-                if (bossDefeatFreeze > 0) bossDefeatFreeze--;
+                // bossDefeatFreeze decays in tickUpdateOnce()
+                // if (bossDefeatFreeze > 0) bossDefeatFreeze--; // moved
                 // Resolve pending bonus decision when freeze ends
                 if (bonusDecisionPending && bossDefeatFreeze === 0 && !bonusActive) {
                     // 50% chance to play a bonus; then 50/50 which variant
@@ -12644,13 +13872,13 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                 // Update bonus timers and UI if active
                 if (bonusActive) {
                     if (bonusTimer > 0) {
-                        bonusTimer--;
+                        // bonusTimer decays in tickUpdateOnce()
                         const secs = Math.max(0, Math.ceil(bonusTimer / 60));
                         const m = Math.floor(secs / 60);
                         const s = secs % 60;
                         const ss = (s < 10 ? '0' + s : '' + s);
                         if (bonusIntroFrames > 0) {
-                            bonusIntroFrames--;
+                            // bonusIntroFrames decays in tickUpdateOnce()
                         } else {
                             showHUDMessage && showHUDMessage(`TIME: ${m}:${ss}`, 12);
                         }
@@ -12663,7 +13891,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                             finishBonus(false);
                         }
                     } else if (bonusResultTimer > 0) {
-                        bonusResultTimer--;
+                        // bonusResultTimer decays in tickUpdateOnce()
                         if (bonusResultTimer === 0) {
                             bonusActive = false;
                             bonusDecisionPending = false;
@@ -12676,7 +13904,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                 // Final boss victory countdown -> Game Over screen
                 if (finalVictoryPending) {
                     if (finalVictoryTimer > 0) {
-                        finalVictoryTimer--;
+                        // finalVictoryTimer decays in tickUpdateOnce()
                         // Subtle repeating overlay pulse while waiting
                         if (glRenderer && (finalVictoryTimer % 30 === 0)) {
                             if (glRenderer.pulseExplosion) glRenderer.pulseExplosion(220, canvas.width * 0.5, canvas.height * 0.5);
@@ -12693,7 +13921,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                 }
                 // Player death: wait a few seconds showing the explosion before Game Over UI
                 if (pendingGameOver) {
-                    if (pendingGameOverTimer > 0) pendingGameOverTimer--;
+                    // pendingGameOverTimer decays in tickUpdateOnce()
                     if (pendingGameOverTimer <= 0) {
                         pendingGameOver = false;
                         gameOver();
@@ -12702,105 +13930,8 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         return; // stop this frame's gameplay update
                     }
                 }
-                // Level 4 boss intro state machine (runs during classic play)
-                if (gameSubstate === 'boss_intro') {
-                    if (bossIntroPhase === 'warning') {
-                        // Continuous screen shake during boss intro warning phase
-                        shakeFrames = Math.max(shakeFrames, 2);
-                        shakeIntensity = Math.max(shakeIntensity, 2.2);
-                        // Heartbeat beeps: one at start (fired on start), one mid-way
-                        const total = 72;
-                        const elapsed = total - Math.max(0, bossIntroTimer);
-                        if (elapsed >= 36 && bossIntroBeepLatch === 0) {
-                            bossIntroBeepLatch = 1;
-                            try { audio.playSfx('bomb'); } catch (e) {}
-                        }
-                        if (bossIntroTimer > 0) bossIntroTimer--; else {
-                            bossIntroPhase = 'flyin';
-                            bossIntroTimer = 240; // ~4s of fly-in
-                            // Level 8: initialize bottom-right offscreen start and center target; no alpha/scale fades
-                            if (level === 8) {
-                                const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
-                                const w = bossIntroSprite ? (bossIntroSprite.width / dpr) : 512;
-                                const h = bossIntroSprite ? (bossIntroSprite.height / dpr) : 512;
-                                bossIntroFromX = canvas.width + w * 0.2;
-                                bossIntroFromY = canvas.height + h * 0.2;
-                                bossIntroToX = canvas.width * 0.5;
-                                bossIntroToY = canvas.height * 0.5;
-                                bossIntroX = bossIntroFromX;
-                                bossIntroY = bossIntroFromY;
-                                bossIntroScale = 1.0;
-                                bossIntroAlpha = 1.0;
-                            } else if (level === 12) {
-                                // Level 12: right-side offscreen to the Mothership's start position (no zoom/fade)
-                                const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
-                                const w = bossIntroSprite ? (bossIntroSprite.width / dpr) : 512;
-                                bossIntroFromX = canvas.width + w * 0.2;
-                                bossIntroFromY = canvas.height * 0.5;
-                                bossIntroToX = canvas.width - 140; // see AlienMothershipBoss ctor
-                                bossIntroToY = canvas.height * 0.5;
-                                bossIntroX = bossIntroFromX;
-                                bossIntroY = bossIntroFromY;
-                                bossIntroScale = 1.0;
-                                bossIntroAlpha = 1.0;
-                            }
-                        }
-                    } else if (bossIntroPhase === 'flyin') {
-                        // Continuous screen shake during boss intro fly-in phase (slightly stronger)
-                        shakeFrames = Math.max(shakeFrames, 2);
-                        shakeIntensity = Math.max(shakeIntensity, 3.0);
-                        // Level 8: ease-in movement from bottom-right toward center; keep scale/alpha fixed
-                        if (level === 8) {
-                            const totalFly = 240;
-                            const t = Math.max(0, Math.min(1, 1 - bossIntroTimer / totalFly));
-                            const easeIn = t * t; // quadratic ease-in for earlier on-screen appearance
-                            bossIntroX = bossIntroFromX + (bossIntroToX - bossIntroFromX) * easeIn;
-                            bossIntroY = bossIntroFromY + (bossIntroToY - bossIntroFromY) * easeIn;
-                            bossIntroScale = 1.0;
-                            bossIntroAlpha = 1.0;
-                        } else if (level === 12) {
-                            // Level 12: ease-in from offscreen right to start X on right side; no zoom/fade
-                            const totalFly = 240;
-                            const t = Math.max(0, Math.min(1, 1 - bossIntroTimer / totalFly));
-                            const easeIn = t * t;
-                            bossIntroX = bossIntroFromX + (bossIntroToX - bossIntroFromX) * easeIn;
-                            bossIntroY = bossIntroFromY + (bossIntroToY - bossIntroFromY) * easeIn;
-                            bossIntroScale = 1.0;
-                            bossIntroAlpha = 1.0;
-                        }
-                        if (bossIntroTimer > 0) bossIntroTimer--; else {
-                            // White flash and spawn boss, then clear intro state
-                            bossIntroFlash = Math.max(bossIntroFlash, 10);
-                            gameSubstate = null;
-                            if (level === 8 && !level8Spawned) {
-                                spawnLevel8Boss();
-                            } else if (level === 12 && !level12Spawned) {
-                                spawnLevel12Boss();
-                            } else if (level === 4 && !level4Spawned) {
-                                spawnLevel4Boss();
-                            } else if (level === 10 && !level10Spawned) {
-                                spawnLevel10Boss();
-                            } else if (level === 15 && !level15Spawned) {
-                                spawnLevel15Boss();
-                            }
-                            bossIntroSprite = null;
-                            bossIntroX = bossIntroY = 0;
-                        }
-                        // Animate scale/alpha toward 1 with ease-out
-                        const total = 240;
-                        const t = Math.max(0, Math.min(1, 1 - bossIntroTimer / total));
-                        const ease = 1 - Math.pow(1 - t, 3);
-                        // For non-Level 8/12 intros, use zoom/alpha tween; 8 and 12 keep fixed values
-                        if (level !== 8 && level !== 12) {
-                            bossIntroScale = 0.3 + ease * (1.0 - 0.3);
-                            bossIntroAlpha = 0.2 + ease * (1.0 - 0.2);
-                        }
-                    }
-                }
-                // Gauntlet: schedule waves/trickle/upgrades; classic level logic is skipped
-                if (gameMode === 'gauntlet' && gauntlet) {
-                    try { gauntlet.update(); } catch (e) {}
-                }
+                // Boss intro state machine runs in tickUpdateOnce()
+                // Gauntlet scheduling runs in tickUpdateOnce()
                 // Level management based on score (classic only)
                 if (gameMode !== 'gauntlet') {
                 // Levels every 1000 points: 0-999:1, 1000-1999:2, ..., 9000-9999:10, 10000+:11
@@ -12819,206 +13950,22 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     (score < 12000) ? 12 :
                     (score < 13000) ? 13 :
                     (score < 14000) ? 14 : 15;
-                // Start upgrade selection only on natural 1000-point thresholds (no boss bonus)
-                // Also suppress during bonus decision/active/result windows
-                if (!bossActive && bossDefeatFreeze === 0 && !bonusActive && !bonusDecisionPending && bonusResultTimer === 0 && !upgradePending && !deferUpgradeUntilStrandedGone) {
-                    if (pendingLevel === 0 && targetLevel > level) {
-                        // Normal progression by score threshold
-                        const nextLevel = targetLevel;
-                        const needsStrandedEvacGating =
-                            (nextLevel === 3 || nextLevel === 7) && strandedShip && strandedShip.active;
-                        if (needsStrandedEvacGating) {
-                            // Apply the level immediately to start evacuation, and defer the overlay
-                            pendingLevel = nextLevel; // will be applied by newLevel logic below
-                            deferUpgradeUntilStrandedGone = true;
-                        } else {
-                            startUpgradeSelection(nextLevel);
-                        }
-                    }
-                }
+                // Upgrade selection gating now runs in tickUpdateOnce()
                 // While a boss, upgrade, boss-defeat freeze, or bonus-level flow is active, keep current level.
                 // Otherwise, prefer any queued pendingLevel (from boss defeat or bonus), falling back to score target.
                 const newLevel = (bossActive || upgradePending || bossDefeatFreeze > 0 || bonusActive || bonusDecisionPending || bonusResultTimer > 0)
                     ? level
                     : (pendingLevel > 0 ? pendingLevel : targetLevel);
-                if (newLevel !== level) {
-                    const prevLevel = level;
-                    level = newLevel;
-                    // Award EXP on level completion/transition (classic mode gated inside addEXP)
-                    addEXP(15, 'level');
-                    // Armor on boss clears only: grant +1 armor when completing levels 4, 10, and 12
-                    try {
-                        if (prevLevel === 4 || prevLevel === 10 || prevLevel === 12) {
-                            const before = player.armor || 0;
-                            const cap = (player && player.maxArmor) ? player.maxArmor : 6;
-                            if (before < cap) {
-                                player.armor = Math.min(cap, before + 1);
-                            }
-                        }
-                    } catch (e) {}
-                    // Clear any recorded pending level now that transition is applied
-                    pendingLevel = 0;
-                    levelGlowTimer = 120; // pulse for ~2s
-                    // Per-level background and starfield variety
-                    initBackgroundForLevel(level);
-                    initStars();
-                    // Start or refresh ambient track for the new level
-                    try { startAmbientForLevel(level); } catch (e) {}
-                    // Transition behaviors
-                    if (level === 2 && !level2Spawned) {
-                        // Spawn stranded ship at safe random location
-                        let sx, sy, tries = 0;
-                        do {
-                            sx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
-                            sy = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
-                            tries++;
-                        } while (!isSafeForStranded(sx, sy) && tries < 50);
-                        strandedShip = new StrandedShip(sx, sy, {
-                            setShake: (frames, intensity) => {
-                                shakeFrames = Math.max(shakeFrames, frames);
-                                shakeIntensity = Math.max(shakeIntensity, intensity);
-                            }
-                        });
-                        strandedBonusGiven = false;
-                        level2Spawned = true;
-                        levelMessageTimer = 240; // ~4 seconds at 60fps
-                        levelMessageText = 'Protect the stranded ship!';
-                    } else if (level === 3) {
-                        // Evacuate stranded ship with shield; make invulnerable while exiting
-                        if (strandedShip) {
-                            strandedShip.evacuating = true;
-                            strandedShip.invulnerable = true;
-                            strandedShip.speed = 6;
-                        }
-                        levelMessageTimer = 240; // ~4 seconds at 60fps
-                        levelMessageText = 'Watch out for armored asteroids!';
-                        
-                        // Spawn armored asteroids immediately at level start (double for level 3)
-                        for (let i = 0; i < 2; i++) {
-                            let ax, ay;
-                            do {
-                                ax = Math.random() * canvas.width;
-                                ay = Math.random() * canvas.height;
-                            } while (!isSafeLocation(ax, ay));
-                            
-                            asteroids.push(new Asteroid(ax, ay, 4, true));
-                        }
-                    } else if (level === 4 && !level4Spawned && !bossActive && gameSubstate !== 'boss_intro') {
-                        // Begin Level 4 pre-fight intro sequence (warning + fly-in)
-                        startLevel4BossIntro();
-                        level4IntroStarted = true;
-                        // Clear field now so the arena is clean during intro
-                        asteroids.length = 0;
-                        bullets.length = 0;
-                        if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                // Level changes are now applied inside tickUpdateOnce(); transition behaviors remain below
+                if (level === 4 && !level4Spawned && !bossActive && gameSubstate !== 'boss_intro') {
+                        // Level 4 transition moved to tickUpdateOnce()
                     } else if (level === 5 && !level5Spawned && !bossActive) {
-                        // Ensure stranded ship does not appear in Level 5
-                        strandedShip = null;
-                        // Spawn gravity wells around the field
-                        gravityWells = [];
-                        for (let i = 0; i < GRAVITY_WELL_COUNT; i++) {
-                            let gx, gy, tries = 0;
-                            // Enforce minimum separation between wells to avoid clustering
-                            const minSpacing = GRAVITY_RADIUS * 1.8;
-                            let ok = false;
-                            do {
-                                gx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
-                                gy = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
-                                tries++;
-                                // Must be safe and far from already placed wells
-                                if (isSafeLocation(gx, gy)) {
-                                    ok = true;
-                                    for (let j = 0; j < gravityWells.length; j++) {
-                                        const dx = gravityWells[j].x - gx;
-                                        const dy = gravityWells[j].y - gy;
-                                        if (Math.hypot(dx, dy) < minSpacing) { ok = false; break; }
-                                    }
-                                }
-                            } while (!ok && tries < 120);
-                            gravityWells.push(new GravityWell(gx, gy));
-                        }
-                        level5Spawned = true;
-                        levelMessageTimer = 240; // ~4 seconds at 60fps
-                        levelMessageText = 'Gravity wells distort space!';
+                        // Level 5 transition moved to tickUpdateOnce()
                     } else if (level === 6 && !level6Spawned && !bossActive) {
-                        // Transition to Level 6: remove all gravity wells from Level 5
-                        if (gravityWells && gravityWells.length) gravityWells.length = 0;
-                        // Clear all previous level's asteroids
-                        if (asteroids && asteroids.length) asteroids.length = 0;
-                        // Spawn mines and a stranded ship
-                        mines = [];
-                        for (let i = 0; i < MINE_COUNT; i++) {
-                            let mx, my, tries = 0;
-                            do {
-                                mx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
-                                my = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
-                                tries++;
-                            } while (((Math.hypot(mx - player.x, my - player.y) < 220) || !isSafeLocation(mx, my)) && tries < 50);
-                            mines.push(new Mine(mx, my));
-                        }
-                        // Spawn stranded ship similar to level 2
-                        {
-                            let sx, sy, tries = 0;
-                            do {
-                                sx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
-                                sy = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
-                                tries++;
-                            } while (!isSafeForStranded(sx, sy) && tries < 50);
-                            strandedShip = new StrandedShip(sx, sy, {
-                                setShake: (frames, intensity) => {
-                                    shakeFrames = Math.max(shakeFrames, frames);
-                                    shakeIntensity = Math.max(shakeIntensity, intensity);
-                                }
-                            });
-                            strandedBonusGiven = false;
-                        }
-                        level6Spawned = true;
-                        levelMessageTimer = 240; // ~4 seconds at 60fps
-                        levelMessageText = 'Minefield detected! Protect the stranded ship!';
+                        // Level 6 transition moved to tickUpdateOnce()
                     } else if (level === 7 && !level7Spawned && !bossActive) {
-                        // Evacuate stranded ship at end of Level 6 (invulnerable while exiting)
-                        if (strandedShip) {
-                            strandedShip.evacuating = true;
-                            strandedShip.invulnerable = true;
-                            strandedShip.speed = 6;
-                        }
-                        // Spawn two wormholes far apart
-                        wormholes = [];
-                        let ax, ay, bx, by, tries = 0;
-                        // First wormhole
-                        do {
-                            ax = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
-                            ay = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
-                            tries++;
-                        } while (!isSafeLocation(ax, ay) && tries < 100);
-                        // Second wormhole far from first and safe
-                        tries = 0;
-                        do {
-                            bx = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
-                            by = Math.random() * canvas.height * 0.8 + canvas.height * 0.1;
-                            tries++;
-                        } while (((Math.hypot(bx - ax, by - ay) < Math.min(canvas.width, canvas.height) * 0.5) || !isSafeLocation(bx, by)) && tries < 200);
-                        wormholes.push(new Wormhole(ax, ay));
-                        wormholes.push(new Wormhole(bx, by));
-                        // Immediately seed asteroids for Level 7 with a 50% chance to be elite
-                        {
-                            const initialSpawns = 4;
-                            for (let i = 0; i < initialSpawns; i++) {
-                                if (Math.random() < 0.5) {
-                                    spawnAsteroidOffscreen(3, false, true);
-                                } else {
-                                    spawnOffscreenNormalAsteroid();
-                                }
-                            }
-                        }
-                        // Ensure a small baseline of normal asteroids at Level 7 start
-                        while (countNormalAsteroids() < 2) {
-                            spawnOffscreenNormalAsteroid();
-                        }
-                        level7Spawned = true;
-                        levelMessageTimer = 240; // ~4 seconds at 60fps
-                        levelMessageText = 'Wormholes detected! Elite asteroids inbound!';
-                    } else if (level === 8 && !level8Spawned && !bossActive && gameSubstate !== 'boss_intro') {
+                        // Level 7 transition moved to tickUpdateOnce()
+                    } else if ((level === 8 && !level8Spawned && !bossActive && gameSubstate !== 'boss_intro') && false) { // Moved to tickUpdateOnce()
                         // Begin Level 8 pre-fight intro sequence (warning + bottom-right fly-in)
                         startLevel8BossIntro();
                         level8IntroStarted = true;
@@ -13030,7 +13977,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         enemyBullets.length = 0;
                         if (drones && drones.length) drones.length = 0;
                         if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
-                    } else if (level === 9 && !level9Spawned && !bossActive) {
+                    } else if ((level === 9 && !level9Spawned && !bossActive) && false) { // Moved to tickUpdateOnce()
                         // Level 9: Dense asteroid belt of medium normal asteroids
                         level9Spawned = true;
                         levelMessageTimer = 240;
@@ -13074,7 +14021,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                                 asteroids.push(new Asteroid(ax, ay, 2));
                             }
                         }
-                    } else if (level === 10 && !level10Spawned && !bossActive && gameSubstate !== 'boss_intro') {
+                    } else if ((level === 10 && !level10Spawned && !bossActive && gameSubstate !== 'boss_intro') && false) { // Moved to tickUpdateOnce()
                         // Begin Level 10 pre-fight intro sequence (warning + fly-in)
                         startLevel10BossIntro();
                         level10IntroStarted = true;
@@ -13087,7 +14034,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         if (mines && mines.length) mines.length = 0;
                         if (drones && drones.length) drones.length = 0;
                         if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
-                    } else if (level === 11 && !level11Spawned && !bossActive) {
+                    } else if ((level === 11 && !level11Spawned && !bossActive) && false) { // Moved to tickUpdateOnce()
                         // Level 11: Stranded ship + two wormhole pairs, continuous normal asteroid flow
                         // Clear field of hazards/enemies and reset stranded ship
                         if (gravityWells && gravityWells.length) gravityWells.length = 0;
@@ -13140,7 +14087,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         level11Spawned = true;
                         levelMessageTimer = 240;
                         levelMessageText = 'Protect the stranded ship! Wormholes detected!';
-                    } else if (level === 12 && !level12Spawned && !bossActive && gameSubstate !== 'boss_intro') {
+                    } else if ((level === 12 && !level12Spawned && !bossActive && gameSubstate !== 'boss_intro') && false) { // Moved to tickUpdateOnce()
                         // Begin Level 12 pre-fight intro sequence (warning + right-side fly-in)
                         startLevel12BossIntro();
                         level12IntroStarted = true;
@@ -13155,7 +14102,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         if (drones && drones.length) drones.length = 0;
                         if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
                         strandedShip = null;
-                    } else if (level === 13 && !level13Spawned && !bossActive) {
+                    } else if ((level === 13 && !level13Spawned && !bossActive) && false) { // Moved to tickUpdateOnce()
                         // Level 13: Replace wormholes with a single Black Hole + phased/armored asteroids
                         // Clear prior hazards and transient entities
                         if (asteroids && asteroids.length) asteroids.length = 0;
@@ -13196,7 +14143,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         level13Spawned = true;
                         levelMessageTimer = 240; // ~4 seconds
                         levelMessageText = 'Beware the Black Hole!';
-                    } else if (level === 14 && !level14Spawned && !bossActive) {
+                    } else if ((level === 14 && !level14Spawned && !bossActive) && false) { // Moved to tickUpdateOnce()
                         // Level 14: Normal asteroid field reset and buildup
                         // Clear hazards and transient entities
                         if (gravityWells && gravityWells.length) gravityWells.length = 0;
@@ -13230,23 +14177,21 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         level14Spawned = true;
                         levelMessageTimer = 240;
                         levelMessageText = 'Warning: Tethered asteroids are invulnrable!';
-                    } else if (level === 15 && !level15Spawned && !bossActive && gameSubstate !== 'boss_intro') {
+                    } else if ((level === 15 && !level15Spawned && !bossActive && gameSubstate !== 'boss_intro') && false) { // Moved to tickUpdateOnce()
                         // Begin Level 15 pre-fight intro sequence (warning + fly-in)
                         startLevel15BossIntro();
                         level15IntroStarted = true;
                         // Clear the field now so the arena is clean during intro
                         if (tetherPairs && tetherPairs.length) tetherPairs.length = 0;
-                        if (blackHole) blackHole = null;
-                        asteroids.length = 0;
-                        bullets.length = 0;
-                        enemyBullets.length = 0;
-                        if (drones && drones.length) drones.length = 0;
-                        if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
-                        strandedShip = null;
-                    }
+                    if (blackHole) blackHole = null;
+                    asteroids.length = 0;
+                    bullets.length = 0;
+                    enemyBullets.length = 0;
+                    if (drones && drones.length) drones.length = 0;
+                    if (cloneDrones && cloneDrones.length) cloneDrones.length = 0;
+                    strandedShip = null;
                 }
-                }
-            
+            }
                 // Update and draw warp tunnels (teleport effect) behind entities
                 if (warpTunnels && warpTunnels.length > 0) {
                     warpTunnels = warpTunnels.filter(t => {
@@ -13391,25 +14336,22 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     tetherPairs.forEach(tp => { tp.update(canvas); tp.draw(ctx); });
                 }
                 
-                // Update and draw mines (Level 6)
+                // Draw mines (updated in tickUpdateOnce)
                 if (mines && mines.length > 0) {
-                    mines = mines.filter(m => !m.exploded);
-                    mines.forEach(m => { m.update(level, gravityWells, canvas, applyGravityTo); m.draw(ctx); });
+                    mines.forEach(m => { m.draw(ctx); });
                 }
-                // Update and draw player-deployed mines
+                // Draw player-deployed mines (updated in tickUpdateOnce)
                 if (playerMines && playerMines.length > 0) {
-                    playerMines = playerMines.filter(pm => !pm.exploded);
                     for (let i = 0; i < playerMines.length; i++) {
                         const pm = playerMines[i];
-                        pm.update();
                         pm.draw(ctx);
                     }
                 }
                 
                 // Draw stranded ship (behind asteroids/bullets if desired)
                 if (strandedShip && strandedShip.active) {
-                    strandedShip.update(canvas, frameCount, spawnParticle);
-                    strandedShip.draw(ctx, frameCount);
+                    strandedShip.update(canvas, simFrameCount, spawnParticle);
+                    strandedShip.draw(ctx, simFrameCount);
                 }
                 // If the stranded ship successfully evacuated (was evacuating and is now inactive),
                 // award the special EXP bonus once.
@@ -13433,23 +14375,48 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     }
                 }
                 
-                // Update and draw asteroids
+                // Draw asteroids (updated in tickUpdateOnce)
                 if (asteroids && asteroids.length > 0) {
                     asteroids.forEach(a => {
-                        a.update(level, gravityWells, canvas, applyGravityTo, (sx, sy) => {
-                            // Spawn a homing drone at the asteroid's position
-                            drones.push(new Drone(sx, sy));
-                        });
-                        a.draw(ctx);
+                        let useInterp = (a.prevX != null) && !a.justTeleported;
+                        if (useInterp) {
+                            const ddx = Math.abs(a.x - a.prevX);
+                            const ddy = Math.abs(a.y - a.prevY);
+                            if (ddx > canvas.width * 0.5 || ddy > canvas.height * 0.5) useInterp = false;
+                        }
+                        const rx = useInterp ? (a.prevX + (a.x - a.prevX) * renderAlpha) : a.x;
+                        const ry = useInterp ? (a.prevY + (a.y - a.prevY) * renderAlpha) : a.y;
+                        let rot = a.rotation || 0;
+                        if (a.prevRotation != null && typeof a.rotation === 'number') {
+                            // Shortest-arc interpolation: wrap into [-PI, PI]
+                            let d = (a.rotation - a.prevRotation + Math.PI) % (Math.PI * 2);
+                            if (d < 0) d += Math.PI * 2;
+                            d -= Math.PI;
+                            rot = a.prevRotation + d * renderAlpha;
+                        }
+                        a.draw(ctx, rx, ry, rot);
                     });
                 }
                 
-                // Update and draw phased asteroids
+                // Draw phased asteroids (updated in tickUpdateOnce)
                 if (phasedAsteroids && phasedAsteroids.length > 0) {
-                    filterInPlace(phasedAsteroids, pa => {
-                        pa.update(canvas);
-                        pa.draw(ctx);
-                        return !pa.dead;
+                    phasedAsteroids.forEach(pa => {
+                        let useInterp = (pa.prevX != null) && !pa.justTeleported;
+                        if (useInterp) {
+                            const ddx = Math.abs(pa.x - pa.prevX);
+                            const ddy = Math.abs(pa.y - pa.prevY);
+                            if (ddx > canvas.width * 0.5 || ddy > canvas.height * 0.5) useInterp = false;
+                        }
+                        const rx = useInterp ? (pa.prevX + (pa.x - pa.prevX) * renderAlpha) : pa.x;
+                        const ry = useInterp ? (pa.prevY + (pa.y - pa.prevY) * renderAlpha) : pa.y;
+                        let rot = pa.rotation || 0;
+                        if (pa.prevRotation != null && typeof pa.rotation === 'number') {
+                            let d = (pa.rotation - pa.prevRotation + Math.PI) % (Math.PI * 2);
+                            if (d < 0) d += Math.PI * 2;
+                            d -= Math.PI;
+                            rot = pa.prevRotation + d * renderAlpha;
+                        }
+                        pa.draw(ctx, rx, ry, rot);
                     });
                 }
                 // Update and draw Bonus asteroid/chunks
@@ -13458,192 +14425,9 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     drawBonusObjects(ctx);
                 }
                 
-                // Boss update/draw
+                // Boss draw only (updated and defeat handled in tickUpdateOnce)
                 if (bossActive && boss) {
-                    boss.update();
                     boss.draw();
-                    if (typeof boss.isDefeated === 'function' && boss.isDefeated()) {
-                        // End boss phase
-                        const bx = boss.x, by = boss.y;
-                        const bossName = (boss && boss.constructor && boss.constructor.name) || '';
-                        bossActive = false;
-                        boss = null;
-                        if (level === 15) {
-                            // Final victory: display HUD message and schedule Game Over after 5s
-                            bossDefeatFreeze = 300;
-                            finalVictoryPending = true;
-                            finalVictoryTimer = 300; // 5s at 60fps
-                            // HUD banner (with completion rewards summary when available)
-                            try {
-                                const txt = (typeof getActiveCompletionRewardsText === 'function') ? getActiveCompletionRewardsText() : '';
-                                if (txt && txt.length) showHUDMessage && showHUDMessage(`FINAL BOSS DEFEATED! Rewards: ${txt}`, 240);
-                                else showHUDMessage && showHUDMessage('FINAL BOSS DEFEATED!', 240);
-                            } catch (e) { try { showHUDMessage && showHUDMessage('FINAL BOSS DEFEATED!', 240); } catch (e2) {} }
-                            // Persist completion for start screen UI
-                            try { localStorage.setItem('asteraidGameCompleted', '1'); } catch (e) {}
-                            // Prevent any last-second deaths during celebration
-                            player.invulnerable = Math.max(player.invulnerable, 300);
-                            // Ensure thrust loop is silenced
-                            try { audio.stopThrust(); } catch (e) {}
-                            // Big overlay pulse at the defeat location
-                            if (glRenderer) {
-                                if (glRenderer.pulseExplosion) glRenderer.pulseExplosion(300, bx, by);
-                                if (glRenderer.spawnGlow) glRenderer.spawnGlow(bx, by, 0xffccaa, 72, 1.0);
-                            }
-                            // Cinematic FX: short slow-mo, starfield boost, vignette flash, brief chroma split
-                            slowMoFrames = Math.max(slowMoFrames, 42);
-                            starBoostFrames = Math.max(starBoostFrames, 150);
-                            vignetteFlashFrames = Math.max(vignetteFlashFrames, 15);
-                            chromaAberrationFrames = Math.max(chromaAberrationFrames, 3);
-                            // Supernova rings and embers using Particle system (performance-light)
-                            try {
-                                // Supernova rings
-                                if (glRenderer && glRenderer.spawnShockwaveRing) {
-                                    glRenderer.spawnShockwaveRing(bx, by, 0xffeeaa, 36, 3, 1.06, 0.92);
-                                    glRenderer.spawnShockwaveRing(bx, by, 0xffeeaa, 54, 3, 1.05, 0.92);
-                                    glRenderer.spawnShockwaveRing(bx, by, 0xffeeaa, 72, 3, 1.04, 0.92);
-                                } else {
-                                    for (let i = 0; i < 3; i++) {
-                                        const ring = new Particle(bx, by, 0, 0, '#ffeeaa', 36 + i * 18);
-                                        ring.shape = 'ring';
-                                        ring.noWrap = true;
-                                        ring.growth = 12 + i * 8;
-                                        ring.thickness = 3;
-                                        ring.glow = 24;
-                                        particlesAbove.push(ring);
-                                    }
-                                }
-                                // Dissolve glitter
-                                if (glRenderer && glRenderer.spawnAboveDiamond) {
-                                    for (let i = 0; i < 40; i++) {
-                                        const a = Math.random() * Math.PI * 2;
-                                        const sp = 1 + Math.random() * 2.5;
-                                        glRenderer.spawnAboveDiamond(
-                                            bx,
-                                            by,
-                                            0xffddaa,
-                                            3,
-                                            Math.cos(a) * sp,
-                                            Math.sin(a) * sp,
-                                            60 + (Math.random() * 30 | 0),
-                                            1.0
-                                        );
-                                    }
-                                } else {
-                                    for (let i = 0; i < 40; i++) {
-                                        const a = Math.random() * Math.PI * 2;
-                                        const sp = 1 + Math.random() * 2.5;
-                                        const p = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, '#ffddaa', 60 + (Math.random() * 30 | 0));
-                                        p.shape = 'diamond'; p.noWrap = true; p.glow = 14; p.radius = 2 + Math.random() * 2;
-                                        particlesAbove.push(p);
-                                    }
-                                }
-                            } catch (e) {}
-                        } else {
-                            // Normal boss defeat: 3s freeze and advance level
-                            bossDefeatFreeze = 210;
-                            // Revert back to ambient track after non-final boss defeat
-                            try { startAmbientForLevel(level); } catch (e) {}
-                            // Queue next level transition without forcing an upgrade offer
-                            pendingLevel = Math.min(15, level + 1);
-                            // Mark that we should decide on a bonus level once freeze ends (levels 4, 8, 10, 12)
-                            if (level === 4 || level === 8 || level === 10 || level === 12) {
-                                bonusDecisionPending = true;
-                            }
-                            levelMessageTimer = 240;
-                            levelMessageText = 'Boss defeated!';
-                            // Short cinematic beats
-                            slowMoFrames = Math.max(slowMoFrames, 30);
-                            starBoostFrames = Math.max(starBoostFrames, 45);
-                            vignetteFlashFrames = Math.max(vignetteFlashFrames, 10);
-                            // Subtle portal/wipe hint
-                            try { warpTunnels.push(new WarpTunnel(bx, by, canvas.width * 0.5, canvas.height * 0.5, 60)); } catch (e) {}
-                            // Particle streamers & boss-specific signature
-                            try {
-                                const streamerCount = 18;
-                                for (let i = 0; i < streamerCount; i++) {
-                                    const a = Math.random() * Math.PI * 2;
-                                    const sp = 2 + Math.random() * 3;
-                                    const col = '#aaccff';
-                                    if (glRenderer && glRenderer.spawnAboveShard) {
-                                        const len = 18 + Math.random() * 14;
-                                        glRenderer.spawnAboveShard(
-                                            bx,
-                                            by,
-                                            0xaaccff,
-                                            len,
-                                            Math.cos(a) * sp,
-                                            Math.sin(a) * sp,
-                                            45 + (Math.random() * 20 | 0),
-                                            1.0
-                                        );
-                                    } else {
-                                        const s = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, col, 45 + (Math.random() * 20 | 0));
-                                        s.shape = 'shard'; s.noWrap = true; s.glow = 16; s.length = 18 + Math.random() * 14; s.thickness = 2;
-                                        particlesAbove.push(s);
-                                    }
-                                }
-                                // Boss-specific quick flair
-                                const flair = (name) => {
-                                    if (name === 'ColossusBoss') return '#ff6666';
-                                    if (name === 'DreadshipBoss') return '#bb66ff';
-                                    if (name === 'CrystalTitanBoss') return '#aaccff';
-                                    if (name === 'AlienMothershipBoss') return '#ff8899';
-                                    return '#ffffff';
-                                };
-                                for (let i = 0; i < 14; i++) {
-                                    const a = Math.random() * Math.PI * 2;
-                                    const sp = 1.5 + Math.random() * 2.2;
-                                    const c = flair(bossName);
-                                    if (glRenderer && glRenderer.spawnAboveDiamond) {
-                                        glRenderer.spawnAboveDiamond(
-                                            bx,
-                                            by,
-                                            parseInt((c || '#ffffff').replace('#','0x')) || 0xffffff,
-                                            3,
-                                            Math.cos(a) * sp,
-                                            Math.sin(a) * sp,
-                                            50 + (Math.random() * 20 | 0),
-                                            1.0
-                                        );
-                                    } else {
-                                        const p = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, c, 50 + (Math.random() * 20 | 0));
-                                        p.shape = 'diamond'; p.noWrap = true; p.glow = 12; p.radius = 2 + Math.random() * 2;
-                                        particlesAbove.push(p);
-                                    }
-                                }
-                                // Dissolve glitter burst (diamond glitter) for non-final bosses as well
-                                {
-                                    const c = flair(bossName);
-                                    const cNum = parseInt((c || '#ffffff').replace('#','0x')) || 0xffffff;
-                                    if (glRenderer && glRenderer.spawnAboveDiamond) {
-                                        for (let i = 0; i < 36; i++) {
-                                            const a = Math.random() * Math.PI * 2;
-                                            const sp = 1.0 + Math.random() * 2.3;
-                                            glRenderer.spawnAboveDiamond(
-                                                bx,
-                                                by,
-                                                cNum,
-                                                3,
-                                                Math.cos(a) * sp,
-                                                Math.sin(a) * sp,
-                                                52 + (Math.random() * 26 | 0),
-                                                1.0
-                                            );
-                                        }
-                                    } else {
-                                        for (let i = 0; i < 36; i++) {
-                                            const a = Math.random() * Math.PI * 2;
-                                            const sp = 1.0 + Math.random() * 2.3;
-                                            const p = new Particle(bx, by, Math.cos(a) * sp, Math.sin(a) * sp, c, 52 + (Math.random() * 26 | 0));
-                                            p.shape = 'diamond'; p.noWrap = true; p.glow = 14; p.radius = 2 + Math.random() * 2;
-                                            particlesAbove.push(p);
-                                        }
-                                    }
-                                }
-                            } catch (e) {}
-                        }
-                    }
                 }
 
                 // UFO spawn/despawn manager and update/draw
@@ -13659,11 +14443,11 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     ufo = null;
                     ufoAppearedThisLevel = true;
                     // Start cooldown from this moment: 3 minutes @60fps
-                    if (ufoNextAllowedFrame < frameCount + 10800) ufoNextAllowedFrame = frameCount + 10800;
+                    if (ufoNextAllowedFrame < simFrameCount + 10800) ufoNextAllowedFrame = simFrameCount + 10800;
                 }
                 // Spawn conditions: only when player has exactly 1 life, no boss, not already seen this level, and cooldown passed
-                if (!bossActive && !ufo && !ufoAppearedThisLevel && lives === 1 && frameCount >= ufoNextAllowedFrame) {
-                    ufo = new UFO({ canvas, getFrameCount: () => frameCount });
+                if (!bossActive && !ufo && !ufoAppearedThisLevel && lives === 1 && simFrameCount >= ufoNextAllowedFrame) {
+                    ufo = new UFO({ canvas, getFrameCount: () => simFrameCount });
                     ufo.setSpawn(Math.random() < 0.5 ? 'left' : 'right');
                 }
                 // Update and draw UFO
@@ -13677,54 +14461,53 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         try { audio.playSfx && audio.playSfx('boss-destroyed'); } catch (e) {}
                         ufo = null;
                         ufoAppearedThisLevel = true;
-                        ufoNextAllowedFrame = frameCount + 10800; // 3 minutes cooldown
+                        ufoNextAllowedFrame = simFrameCount + 10800; // 3 minutes cooldown
                     } else if (ufo.despawned) {
                         ufo = null;
                         ufoAppearedThisLevel = true;
-                        ufoNextAllowedFrame = frameCount + 10800; // 3 minutes cooldown
+                        ufoNextAllowedFrame = simFrameCount + 10800; // 3 minutes cooldown
                     }
                 }
 
-                // Update and draw drones (Level 8+ minions)
+                // Draw drones (Level 8+ minions)
                 if (drones && drones.length > 0) {
-                  filterInPlace(drones, d => {
-                    d.update(player, canvas, enemyBullets, EnemyBullet);
-                    d.draw(ctx);
-                    return !d.dead;
-                  });
+                  // Draw only; updated during sim tick
+                  for (let i = 0; i < drones.length; i++) {
+                    const d = drones[i];
+                    const rx = (d.prevX != null) ? (d.prevX + (d.x - d.prevX) * renderAlpha) : d.x;
+                    const ry = (d.prevY != null) ? (d.prevY + (d.y - d.prevY) * renderAlpha) : d.y;
+                    let currAng = Math.atan2(d.vy || 0, d.vx || 0);
+                    let rAng = currAng;
+                    if (typeof d.prevAngle === 'number') {
+                      let delta = (currAng - d.prevAngle + Math.PI) % (Math.PI * 2);
+                      if (delta < 0) delta += Math.PI * 2;
+                      delta -= Math.PI;
+                      rAng = d.prevAngle + delta * renderAlpha;
+                    }
+                    d.draw(ctx, rx, ry, rAng);
+                  }
                 }
                 
-                // Update and draw friendly clone turrets
+                // Draw clone drones (Level 8+ minions)
                 if (cloneDrones && cloneDrones.length > 0) {
-                    cloneDrones = cloneDrones.filter(t => {
-                        // lifetime
-                        if (!t.dead) {
-                            t.life -= 1;
-                            if (t.life <= 0) {
-                                t.dead = true;
-                                createExplosion(t.x, t.y, 36, '#6ff');
-                            }
-                        }
-                        // auto-fire every 0.5s
-                        if (!t.dead) {
-                            t.fireCooldown -= 1;
-                            if (t.fireCooldown <= 0) {
-                                const bx = t.x + Math.cos(t.angle) * 12;
-                                const by = t.y + Math.sin(t.angle) * 12;
-                                const b = new Bullet(bx, by, t.angle, 0);
-                                {
-                                    const style = getBulletStyleForSkin(window.activeSkinId, 0);
-                                    if (style && style.color) b.color = style.color;
-                                    if (style && style.variant) b.variant = style.variant;
-                                }
-                                bullets.push(b);
-                                t.fireCooldown = 30;
-                            }
+                    // Draw only; updated during sim tick
+                    for (let i = 0; i < cloneDrones.length; i++) {
+                        const t = cloneDrones[i];
+                        if (!t || t.dead) continue;
+                        const rx = (t.prevX != null) ? (t.prevX + (t.x - t.prevX) * renderAlpha) : t.x;
+                        const ry = (t.prevY != null) ? (t.prevY + (t.y - t.prevY) * renderAlpha) : t.y;
+                        const baseAng = (typeof t.angle === 'number') ? t.angle : 0;
+                        let rAng = baseAng;
+                        if (typeof t.prevAngle === 'number') {
+                            let delta = (baseAng - t.prevAngle + Math.PI) % (Math.PI * 2);
+                            if (delta < 0) delta += Math.PI * 2;
+                            delta -= Math.PI;
+                            rAng = t.prevAngle + delta * renderAlpha;
                         }
                         // draw clone as a smaller, solid-filled version of the player ship
                         ctx.save();
-                        ctx.translate(t.x, t.y);
-                        ctx.rotate(t.angle);
+                        ctx.translate(rx, ry);
+                        ctx.rotate(rAng);
                         const s = 0.5; // 50% of player ship size
                         ctx.scale(s, s);
                         ctx.fillStyle = '#fff';
@@ -13743,8 +14526,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                         ctx.shadowBlur = 0;
                         ctx.globalAlpha = 1;
                         ctx.restore();
-                        return !t.dead;
-                    });
+                    }
                 }
 
                 // Update and draw Celestial Companion (final reward pet)
@@ -13825,107 +14607,19 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     }
                 }
                 
-                // Update and draw bullets (absorb by Black Hole if present)
-                bullets = bullets.filter(bullet => {
-                    bullet.update(canvas, level, applyGravityTo);
-                    bullet.draw(ctx);
-                    const alive = bullet.lifetime > 0;
-                    if (!alive) return false;
-                    if (blackHole && blackHole.absorbsBullet(bullet.x, bullet.y, bullet.radius)) return false;
-                    return true;
+                // Draw bullets (updated in tickUpdateOnce)
+                bullets.forEach(bullet => {
+                    const rx = (bullet.prevX != null) ? (bullet.prevX + (bullet.x - bullet.prevX) * renderAlpha) : bullet.x;
+                    const ry = (bullet.prevY != null) ? (bullet.prevY + (bullet.y - bullet.prevY) * renderAlpha) : bullet.y;
+                    bullet.draw(ctx, rx, ry);
                 });
 
-                // Update and draw enemy bullets (from bosses/turrets)
+                // Draw enemy bullets (updated in tickUpdateOnce)
                 if (enemyBullets && enemyBullets.length > 0) {
-                    filterInPlace(enemyBullets, b => {
-                        b.update(canvas);
-                        b.draw(ctx);
-                        return b.lifetime > 0;
-                    });
-                }
-                
-                // Update player
-                updatePlayer();
-                // Black Hole contact damage
-                if (blackHole && player.invulnerable <= 0) {
-                    if (blackHole.touchesPlayer(player.x, player.y, player.radius)) {
-                        takePlayerHit();
-                    }
-                }
-                // Wormhole teleports for player, asteroids, bullets (support multiple pairs)
-                if (wormholes.length >= 2) {
-                    const pairs = [];
-                    for (let i = 0; i + 1 < wormholes.length; i += 2) {
-                        pairs.push([wormholes[i], wormholes[i + 1]]);
-                    }
-                    const tryWarp = (obj, rad) => {
-                        for (let k = 0; k < pairs.length; k++) {
-                            const A = pairs[k][0], B = pairs[k][1];
-                            const test = (from, to) => {
-                                const dx = obj.x - from.x, dy = obj.y - from.y;
-                                if (Math.hypot(dx, dy) < from.radius + rad) {
-                                    // direction from velocity or random
-                                    let vx = obj.vx || 0, vy = obj.vy || 0;
-                                    if (vx === 0 && vy === 0) {
-                                        const ang = Math.random() * Math.PI * 2;
-                                        vx = Math.cos(ang); vy = Math.sin(ang);
-                                    }
-                                    const sp = Math.hypot(vx, vy) || 1;
-                                    const nx = vx / sp, ny = vy / sp;
-                                    obj.x = to.x + nx * (to.radius + rad + 2);
-                                    obj.y = to.y + ny * (to.radius + rad + 2);
-                                    // arrival shimmer
-                                    for (let i = 0; i < 16; i++) {
-                                        const ang = (Math.PI * 2 * i) / 16;
-                                        particles.push(new Particle(
-                                            obj.x,
-                                            obj.y,
-                                            Math.cos(ang) * 2,
-                                            Math.sin(ang) * 2,
-                                            '#8ff',
-                                            24
-                                        ));
-                                    }
-                                    return true;
-                                }
-                                return false;
-                            };
-                            if (test(A, B) || test(B, A)) return true;
-                        }
-                        return false;
-                    };
-                    // Player warp using existing teleporting cooldown
-                    if (player.teleporting <= 0) {
-                        if (tryWarp(player, player.radius)) {
-                            player.teleporting = WORMHOLE_COOLDOWN;
-                        }
-                    }
-                    // Asteroids warp with own cooldown
-                    asteroids.forEach(ast => {
-                        if (ast.warpCooldown && ast.warpCooldown > 0) ast.warpCooldown--;
-                        if (!ast.warpCooldown || ast.warpCooldown <= 0) {
-                            if (tryWarp(ast, ast.radius)) {
-                                ast.warpCooldown = WORMHOLE_COOLDOWN;
-                            }
-                        }
-                    });
-                    // Phased asteroids warp with own cooldown
-                    phasedAsteroids.forEach(pa => {
-                        if (pa.warpCooldown && pa.warpCooldown > 0) pa.warpCooldown--;
-                        if (!pa.warpCooldown || pa.warpCooldown <= 0) {
-                            if (tryWarp(pa, pa.radius)) {
-                                pa.warpCooldown = WORMHOLE_COOLDOWN;
-                            }
-                        }
-                    });
-                    // Bullets warp with own cooldown
-                    bullets.forEach(b => {
-                        if (b.warpCooldown && b.warpCooldown > 0) b.warpCooldown--;
-                        if (!b.warpCooldown || b.warpCooldown <= 0) {
-                            if (tryWarp(b, b.radius)) {
-                                b.warpCooldown = WORMHOLE_COOLDOWN;
-                            }
-                        }
+                    enemyBullets.forEach(b => {
+                        const rx = (b.prevX != null) ? (b.prevX + (b.x - b.prevX) * renderAlpha) : b.x;
+                        const ry = (b.prevY != null) ? (b.prevY + (b.y - b.prevY) * renderAlpha) : b.y;
+                        b.draw(ctx, rx, ry);
                     });
                 }
                 
@@ -13960,7 +14654,16 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     } catch (e) {}
                 }
                 // Draw player after particles so trails render underneath
-                drawPlayer();
+                const playerRenderX = (player && player.prevX != null) ? (player.prevX + (player.x - player.prevX) * renderAlpha) : (player ? player.x : 0);
+                const playerRenderY = (player && player.prevY != null) ? (player.prevY + (player.y - player.prevY) * renderAlpha) : (player ? player.y : 0);
+                let playerRenderAngle = player && (typeof player.angle === 'number') ? player.angle : 0;
+                if (player && player.prevAngle != null && typeof player.angle === 'number') {
+                    let d = (player.angle - player.prevAngle + Math.PI) % (Math.PI * 2);
+                    if (d < 0) d += Math.PI * 2;
+                    d -= Math.PI;
+                    playerRenderAngle = player.prevAngle + d * renderAlpha;
+                }
+                drawPlayer(playerRenderX, playerRenderY, playerRenderAngle);
                 // Update and draw particles that should appear above the ship (muzzle/charge effects)
                 particlesAbove = particlesAbove.filter(particle => {
                     particle.update(canvas);
@@ -14115,120 +14818,20 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     laserTimer--;
                 }
                 
-                // Update and draw powerups (drift and offscreen despawn)
+                // Draw powerups (updated in tickUpdateOnce)
                 if (powerups && powerups.length > 0) {
-                    filterInPlace(powerups, p => {
-                        p.update(canvas);
-                        p.draw(ctx);
-                        return !p.dead;
-                    });
+                    powerups.forEach(p => { p.draw(ctx); });
                 }
                 
-                // Check collisions
-                checkCollisions();
+                // Collisions run in tickUpdateOnce()
                 
-                // If combo window expired without a new kill, finalize the combo
-                if (comboActive && lastKillFrame >= 0 && (frameCount - lastKillFrame) > COMBO_WINDOW_FRAMES) {
-                    maxComboBonusTotal = Math.max(maxComboBonusTotal, currentComboBonusTotal);
-                    comboActive = false;
-                    currentComboBonusTotal = 0;
-                    comboBonusPercent = 0;
-                }
+                // Combo finalize runs in tickUpdateOnce()
                 
                 // Draw floating bonus texts on top of scene
                 drawFloatingTexts();
                 
-                // Level 7: periodically trickle in normal asteroids to keep a small presence (classic only)
-                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro' && level === 7 && frameCount % 240 === 0) {
-                    if (countNormalAsteroids() < 2) {
-                        spawnOffscreenNormalAsteroid();
-                    }
-                }
-                // Level 11: continuously trickle in normal asteroids to maintain flow (classic only)
-                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro' && level === 11 && frameCount % 180 === 0) {
-                    if (countNormalAsteroids() < 4) {
-                        spawnOffscreenNormalAsteroid();
-                    }
-                }
-                // Level 14: maintain a heavier baseline of normal asteroids (classic only)
-                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro' && level === 14 && frameCount % 150 === 0) {
-                    if (countNormalAsteroids() < 6) {
-                        spawnOffscreenNormalAsteroid();
-                    }
-                }
-                
-                // Spawn new asteroids off-screen if all destroyed (disabled during boss, bonus, defeat freeze, and intro) — classic only
-                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro' && (asteroids.length + phasedAsteroids.length) === 0) {
-                    const numAsteroids = Math.min(4 + Math.floor(score / 1000), 8);
-                    for (let i = 0; i < numAsteroids; i++) {
-                        if (level === 6) {
-                            spawnOffscreenNormalAsteroid();
-                        } else if (level === 7) {
-                            // Level 7: 50% chance to spawn an elite; maintain a small baseline of normals
-                            if (countNormalAsteroids() < 2) {
-                                spawnOffscreenNormalAsteroid();
-                            } else if (Math.random() < 0.5) {
-                                spawnAsteroidOffscreen(3, false, true);
-                            } else {
-                                spawnOffscreenNormalAsteroid();
-                            }
-                        } else if (level === 13) {
-                            // Level 13: normals disabled; refill with phased/armored mix
-                            if (Math.random() < 0.7) {
-                                spawnPhasedAsteroidOffscreen();
-                            } else {
-                                spawnAsteroidOffscreen(4, true, false);
-                            }
-                        } else if (level === 4 && Math.random() < 0.45) {
-                            // Level 4: cap armored asteroids alive at 4
-                            const armoredAlive = asteroids.filter(a => a.armored).length;
-                            if (armoredAlive < 4) {
-                                spawnAsteroidOffscreen(4, true, false);
-                            }
-                        } else if (level === 5 && Math.random() < 0.30) {
-                            // Level 5: cap armored asteroids alive at 4
-                            const armoredAlive = asteroids.filter(a => a.armored).length;
-                            if (armoredAlive < 4) {
-                                spawnAsteroidOffscreen(4, true, false);
-                            }
-                        } else {
-                            spawnOffscreenNormalAsteroid();
-                        }
-                    }
-                }
-                
-                // Spawn armored asteroid every 500 points (disabled during boss, defeat freeze, bonus, intro, and levels 6-7) — classic only
-                if (gameMode !== 'gauntlet' && !bossActive && bossDefeatFreeze === 0 && !bonusActive && gameSubstate !== 'boss_intro' && level !== 6 && level !== 7 && score > 0 && score % 500 === 0 && frameCount % 60 === 0) {
-                    let x, y;
-                    do {
-                        x = Math.random() * canvas.width;
-                        y = Math.random() * canvas.height;
-                    } while (!isSafeLocation(x, y));
-                    // Level 4 and 5: cap armored asteroids alive at 4
-                    if (level === 4 || level === 5) {
-                        const armoredAlive = asteroids.filter(a => a.armored).length;
-                        if (armoredAlive < 4) {
-                            asteroids.push(new Asteroid(x, y, 4, true));
-                        }
-                    } else {
-                        asteroids.push(new Asteroid(x, y, 4, true));
-                    }
-                    
-                    // Level 3: double the armored spawn for added difficulty
-                    if (level === 3) {
-                        let x2, y2;
-                        do {
-                            x2 = Math.random() * canvas.width;
-                            y2 = Math.random() * canvas.height;
-                        } while (!isSafeLocation(x2, y2));
-                        asteroids.push(new Asteroid(x2, y2, 4, true));
-                    }
-                }
-                
-                // Objective message timer
-                if (levelMessageTimer > 0) levelMessageTimer--;
-                // Transient power-up message timer
-                if (powerupMessageTimer > 0) powerupMessageTimer--;
+                // Objective message timer (decays in tickUpdateOnce())
+                // Transient power-up message timer (decays in tickUpdateOnce())
                 
                 // Score milestone celebration bloom overlay
                 if (scoreMilestones && scoreMilestones.length > 0) {
@@ -14371,18 +14974,16 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     shielded: player.shielded > 0,
                     playerX: player.x,
                     playerY: player.y,
-                    playerRadius: player.radius + 15 * shieldRadiusMul
+                    playerRadius: player.radius + 15 * shieldRadiusMul,
+                    alpha: renderAlpha
                 });
             } else { try { drawCanvasFallbackFX(ctx); } catch (e) {} }
-            // Decay cinematic timers
-            if (slowMoFrames > 0) slowMoFrames--;
-            if (starBoostFrames > 0) starBoostFrames--;
             
-            // Advance frame counter for animations during play and upgrade menu
+            // Advance visual frame counter for animations only (simulation ticks advance inside accumulator loop)
             if (gameState === 'playing' || gameState === 'upgrade') {
                 if (slowMoFrames > 0) {
                     // Half-rate advancement to simulate slow motion
-                    if ((frameCount & 1) === 0) frameCount++;
+                    if ((frameCount & 1) === 0) { frameCount++; }
                 } else {
                     frameCount++;
                 }
@@ -14401,6 +15002,8 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                     // Ensure overlay shows PAUSED context when opened via pause
                     optionsFromStart = false;
                     configurePauseOverlayForContext();
+                    // Refresh timing settings UI to reflect current values
+                    applyTimingSettingsToUI();
                     updateWebGLToggleButton();
                     updateColorGradeToggleButton();
                     updateFullscreenScaleButton();
@@ -14465,6 +15068,8 @@ function fireCloneDronesCharged(angles, chargeLevel) {
                 try { renderBindingsList(); } catch (e) {}
                 // Initialize menu selection to the first button (WEBGL)
                 initPauseSlidersFromAudio();
+                // Ensure timing controls reflect saved settings
+                applyTimingSettingsToUI();
                 initPauseMenuSelection();
             }
         }
@@ -14514,7 +15119,7 @@ function fireCloneDronesCharged(angles, chargeLevel) {
         // Perf stats (Framerate) toggle controls (Pause menu)
         function updatePerfToggleButton() {
             const btn = document.getElementById('perfToggleBtn');
-            if (btn) btn.textContent = 'Framerate: ' + (perfStatsEnabled ? 'ON' : 'OFF');
+            if (btn) btn.textContent = 'Show FPS: ' + (perfStatsEnabled ? 'ON' : 'OFF');
             const fps = document.getElementById('fpsOverlay');
             if (fps) fps.style.display = perfStatsEnabled ? '' : 'none';
         }

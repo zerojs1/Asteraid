@@ -21,11 +21,13 @@ export class Drone {
     this.x += this.vx; this.y += this.vy;
     if (this.x < -40 || this.x > canvas.width + 40 || this.y < -40 || this.y > canvas.height + 40) this.dead = true;
   }
-  draw(ctx) {
+  draw(ctx, rx = null, ry = null, rAng = null) {
     if (this.dead) return;
     ctx.save();
-    ctx.translate(this.x, this.y);
-    const ang = Math.atan2(this.vy, this.vx);
+    const dx = (rx == null) ? this.x : rx;
+    const dy = (ry == null) ? this.y : ry;
+    ctx.translate(dx, dy);
+    const ang = (rAng == null) ? Math.atan2(this.vy, this.vx) : rAng;
     ctx.rotate(ang);
     ctx.shadowBlur = 12; ctx.shadowColor = '#0f0';
     ctx.strokeStyle = '#0f0'; ctx.lineWidth = 2;
@@ -73,11 +75,13 @@ export class AttackDrone {
     // Offscreen cull
     if (this.x < -40 || this.x > canvas.width + 40 || this.y < -40 || this.y > canvas.height + 40) this.dead = true;
   }
-  draw(ctx) {
+  draw(ctx, rx = null, ry = null, rAng = null) {
     if (this.dead) return;
     ctx.save();
-    ctx.translate(this.x, this.y);
-    const ang = Math.atan2(this.vy, this.vx);
+    const dx = (rx == null) ? this.x : rx;
+    const dy = (ry == null) ? this.y : ry;
+    ctx.translate(dx, dy);
+    const ang = (rAng == null) ? Math.atan2(this.vy, this.vx) : rAng;
     ctx.rotate(ang);
     ctx.shadowBlur = 12; ctx.shadowColor = '#f33';
     ctx.fillStyle = '#f33';
@@ -117,11 +121,13 @@ export class CloneDrone {
     // keep on-screen
     if (this.x < -60 || this.x > canvas.width + 60 || this.y < -60 || this.y > canvas.height + 60) this.dead = true;
   }
-  draw(ctx) {
+  draw(ctx, rx = null, ry = null, rAng = null) {
     if (this.dead) return;
     ctx.save();
-    ctx.translate(this.x, this.y);
-    const ang = Math.atan2(this.vy, this.vx);
+    const dx = (rx == null) ? this.x : rx;
+    const dy = (ry == null) ? this.y : ry;
+    ctx.translate(dx, dy);
+    const ang = (rAng == null) ? Math.atan2(this.vy, this.vx) : rAng;
     ctx.rotate(ang);
     ctx.shadowBlur = 10; ctx.shadowColor = '#6ff';
     ctx.strokeStyle = '#6ff'; ctx.lineWidth = 2;
@@ -159,11 +165,13 @@ export class CrystalDrone {
     this.x += this.vx; this.y += this.vy;
     if (this.x < -40 || this.x > canvas.width + 40 || this.y < -40 || this.y > canvas.height + 40) this.dead = true;
   }
-  draw(ctx) {
+  draw(ctx, rx = null, ry = null, rAng = null) {
     if (this.dead) return;
     ctx.save();
-    ctx.translate(this.x, this.y);
-    const ang = Math.atan2(this.vy, this.vx);
+    const dx = (rx == null) ? this.x : rx;
+    const dy = (ry == null) ? this.y : ry;
+    ctx.translate(dx, dy);
+    const ang = (rAng == null) ? Math.atan2(this.vy, this.vx) : rAng;
     ctx.rotate(ang);
     // Needle-like white filled triangle
     ctx.shadowBlur = 14; ctx.shadowColor = '#ffffff';

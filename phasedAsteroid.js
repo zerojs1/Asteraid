@@ -93,7 +93,7 @@ export class PhasedAsteroid {
     }
   }
 
-  draw(ctx) {
+  draw(ctx, renderX = null, renderY = null, renderRot = null) {
     if (this.dead) return;
 
     // Draw trail using cached sprite
@@ -116,8 +116,10 @@ export class PhasedAsteroid {
       // Ghost state: draw faint sprite as a hint (no re-stroking)
       ctx.save();
       ctx.globalAlpha = 0.15;
-      ctx.translate(this.x, this.y);
-      ctx.rotate(this.rotation);
+      const dx = (renderX == null) ? this.x : renderX;
+      const dy = (renderY == null) ? this.y : renderY;
+      ctx.translate(dx, dy);
+      ctx.rotate((renderRot == null) ? this.rotation : renderRot);
       if (this.spriteCanvas) {
         ctx.drawImage(this.spriteCanvas, -this.spriteHalfW, -this.spriteHalfH, this.spriteW, this.spriteH);
       }
@@ -128,8 +130,10 @@ export class PhasedAsteroid {
 
     // Visible state: draw cached sprite (bright purple baked-in)
     ctx.save();
-    ctx.translate(this.x, this.y);
-    ctx.rotate(this.rotation);
+    const dx2 = (renderX == null) ? this.x : renderX;
+    const dy2 = (renderY == null) ? this.y : renderY;
+    ctx.translate(dx2, dy2);
+    ctx.rotate((renderRot == null) ? this.rotation : renderRot);
     if (this.spriteCanvas) {
       ctx.drawImage(this.spriteCanvas, -this.spriteHalfW, -this.spriteHalfH, this.spriteW, this.spriteH);
     }
